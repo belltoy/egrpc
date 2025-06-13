@@ -1,0 +1,17 @@
+{application, egrpc, [
+    {description, "A gRPC client library for Erlang built on top of gun."},
+    {vsn, "0.1.0"},
+    {registered, []},
+    {mod, {egrpc_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        gun
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [
+        {"Github", "https://github.com/belltoy/egrpc"}
+    ]}
+ ]}.
