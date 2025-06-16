@@ -113,7 +113,7 @@ open(Host, Port, Opts0) ->
         end, StreamInterceptors0),
     StreamInterceptors = lists:map(
        fun({I, InitOpts}) when is_atom(I) ->
-               egrpc_stream_interceptor:init(I, InitOpts)
+           egrpc_stream_interceptor:init(I, InitOpts)
        end, StreamInterceptors1),
 
     maybe

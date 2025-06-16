@@ -9,7 +9,7 @@
 
 -callback init(Opts :: any()) -> {ok, State :: any()}.
 
--callback init_request(Stream, Opts, Next, State :: any()) -> Stream when
+-callback init_req(Stream, Opts, Next, State :: any()) -> Stream when
     Stream :: egrpc:stream(),
     Opts :: map(),
     Next :: fun((Stream, Opts) -> Stream).
@@ -26,18 +26,20 @@
     State :: any(),
     Next :: fun((Stream) -> Stream).
 
--callback recv_response_header(Stream, Next, State) -> any() when
+-callback recv_header(Stream, Timeout, Next, State) -> any() when
     Stream :: egrpc:stream(),
+    Timeout :: erlang:timeout(),
     State :: any(),
-    Next :: fun((Stream) -> {ok, Stream} | {error, any()}).
+    Next :: fun((Stream, Timeout) -> {ok, Stream} | {error, any()}).
 
--callback recv_msg(Stream, Buf, Next, State) -> any() when
+-callback recv_msg(Stream, Timeout, Buf, Next, State) -> any() when
     Stream :: egrpc:stream(),
+    Timeout :: erlang:timeout(),
     State :: any(),
     Response :: map(),
     Buf :: binary(),
     Rest :: binary(),
-    Next :: fun((Stream, Buf) -> {ok, Stream, Response, Rest} | {error, any()}).
+    Next :: fun((Stream, Timeout, Buf) -> {ok, Stream, Response, Rest} | {error, any()}).
 
 -callback parse_msg(Stream, Buf, Next, State) -> any() when
     Stream :: egrpc:stream(),
@@ -49,11 +51,11 @@
 
 -optional_callbacks([
     init/1,
-    init_request/4,
+    init_req/4,
     send_msg/5,
     close_send/3,
-    recv_response_header/3,
-    recv_msg/4,
+    recv_header/4,
+    recv_msg/5,
     parse_msg/4
 ]).
 
