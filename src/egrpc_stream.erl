@@ -230,7 +230,7 @@ recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) 
                     %% This is unexpected for a gRPC response, so we return an error.
                     {error, {grpc_error, eos}};
                 {data, nofin, <<Data/binary>>} ->
-                    recv_msg(Stream, Timeout, <<Buf/binary, Data/binary>>);
+                    recv_msg0(Stream, Timeout, <<Buf/binary, Data/binary>>);
                 {error, _} = Error ->
                     %% Error receiving data, return the error.
                     Error
@@ -241,7 +241,7 @@ recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) 
     %     %% FIXME: maybe decode more, like trailers?
     %     more ?= egrpc_grpc:decode(identity, Decoder, Buf),
     %     {data, nofin, <<Data/binary>>} ?= gun:await(ConnPid, SRef, Timeout),
-    %     recv(Stream, Timeout, <<Buf/binary, Data/binary>>)
+    %     recv_msg0(Stream, Timeout, <<Buf/binary, Data/binary>>)
     % else
     %     {data, fin, _} ->
     %         %% GRPC response must have trailers, so we should not get here.
