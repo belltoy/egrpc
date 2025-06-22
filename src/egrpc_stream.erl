@@ -4,6 +4,8 @@
 
 -export([
     new/2,
+    new_from_stream/1,
+    grpc/1,
     grpc_type/1,
     grpc_method/1,
     grpc_service/1,
@@ -44,9 +46,7 @@
 
 -record(stream, {
     channel :: egrpc_stub:channel(),
-    service :: atom(),
-    rpc_def :: egrpc:rpc_def(),
-    path :: iodata(),
+    grpc :: egrpc:grpc(),
     headers = [] :: [{binary(), binary()}],
     stream_ref :: undefined | gun:stream_ref(),
     encoding = identity :: identity | gzip,
@@ -78,45 +78,50 @@
 }).
 
 -spec new(egrpc_stub:channel(), egrpc:grpc()) -> stream().
-new(Channel, #{service_name := ServiceName, path := Path, rpc_def := RpcDef} = Grpc) ->
+new(Channel, #{rpc_def := RpcDef} = Grpc) ->
     %% TODO: Construct the stream in the code generator
     Codec = egrpc_stub:codec(Channel),
     {Encoder, Decoder} = egrpc_codec:init(Codec, Grpc),
     StreamInterceptor = init_stream_interceptors(RpcDef, egrpc_stub:stream_interceptors(Channel)),
     #stream{
         channel = Channel,
-        service = ServiceName,
-        rpc_def = RpcDef,
-        path = Path,
+        grpc = Grpc,
         encoder = Encoder,
         decoder = Decoder,
         stream_interceptor = StreamInterceptor
     }.
+
+new_from_stream(#stream{channel = Channel, grpc = Grpc} = _Stream) ->
+    new(Channel, Grpc).
 
 info(#stream{} = Stream) -> info(Stream, undefined).
 
 info(#stream{info = undefined}, Default) -> Default;
 info(#stream{info = Info}, _Default) -> Info.
 
-set_info(#stream{} = Stream, Info) ->
-    Stream#stream{info = Info}.
+set_info(#stream{} = Stream, Info) -> Stream#stream{info = Info}.
 
-channel(#stream{channel = Channel}) ->
-    Channel.
+channel(#stream{channel = Channel}) -> Channel.
+
+grpc(#stream{grpc = Grpc}) -> Grpc.
 
 stream_ref(#stream{stream_ref = StreamRef}) -> StreamRef.
 
 -spec grpc_type(stream()) -> egrpc:grpc_type().
-grpc_type(#stream{rpc_def = #{input_stream := false, output_stream := false}}) -> unary;
-grpc_type(#stream{rpc_def = #{input_stream := true, output_stream := false}}) -> client_streaming;
-grpc_type(#stream{rpc_def = #{input_stream := false, output_stream := true}}) -> server_streaming;
-grpc_type(#stream{rpc_def = #{input_stream := true, output_stream := true}}) -> bidi_streaming.
+grpc_type(#stream{grpc = #{rpc_def := #{input_stream := false, output_stream := false}}}) ->
+    unary;
+grpc_type(#stream{grpc = #{rpc_def := #{input_stream := true, output_stream := false}}}) ->
+    client_streaming;
+grpc_type(#stream{grpc = #{rpc_def := #{input_stream := false, output_stream := true}}}) ->
+    server_streaming;
+grpc_type(#stream{grpc = #{rpc_def := #{input_stream := true, output_stream := true}}}) ->
+    bidi_streaming.
 
 -spec grpc_method(egrpc:stream()) -> atom().
-grpc_method(#stream{rpc_def = #{name := Method}}) -> Method.
+grpc_method(#stream{grpc = #{rpc_def := #{name := Method}}}) -> Method.
 
 -spec grpc_service(stream()) -> atom().
-grpc_service(#stream{service = Service}) -> Service.
+grpc_service(#stream{grpc = #{service_name := Service}}) -> Service.
 
 unary(#stream{} = Stream0, Request0, Opts0) ->
     Next0 =
@@ -153,7 +158,7 @@ init_req(#stream{stream_interceptor = undefined} = Stream, Opts) ->
 init_req(#stream{stream_interceptor = I} = Stream, Opts) ->
     (I#stream_interceptor.init_req)(Stream, Opts).
 
-init_req0(#stream{channel = Channel, path = Path} = Stream, Opts) ->
+init_req0(#stream{channel = Channel, grpc = #{path := Path}} = Stream, Opts) ->
     ConnPid = egrpc_stub:conn_pid(Channel),
     OptsMetadata0 = maps:get(metadata, Opts, #{}),
     CustomMetadata0 = maps:filter(
