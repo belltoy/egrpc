@@ -32,5 +32,6 @@
     input := atom(),
     output := atom(),
     input_stream := boolean(),
-    output_stream := boolean()
+    output_stream := boolean(),
+    opts := list()
 }.
