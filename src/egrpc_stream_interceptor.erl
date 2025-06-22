@@ -7,47 +7,52 @@
     is_behaviour_impl/1
 ]).
 
--callback init(Opts :: any()) -> {ok, State :: any()}.
+-callback init(Opts :: any()) -> State :: any().
 
--callback init_req(Stream, Opts, Next, State :: any()) -> Stream when
+-callback init_req(Stream, Opts, Next, State) -> {Stream, State} when
     Stream :: egrpc:stream(),
+    State :: any(),
     Opts :: map(),
     Next :: fun((Stream, Opts) -> Stream).
 
--callback send_msg(Stream, Req, IsFin, Next, State) -> Stream when
+-callback send_msg(Stream, Req, IsFin, Next, State) -> {Stream, State} when
     Stream :: egrpc:stream(),
     Req :: map(),
     IsFin :: fin | nofin,
     State :: any(),
     Next :: fun((Stream, Req, IsFin) -> Stream).
 
--callback close_send(Stream, Next, State) -> Stream when
+-callback close_send(Stream, Next, State) -> {Stream, State} when
     Stream :: egrpc:stream(),
     State :: any(),
     Next :: fun((Stream) -> Stream).
 
--callback recv_header(Stream, Timeout, Next, State) -> any() when
+-callback recv_header(Stream, Timeout, Next, State) -> {ok, {Stream, State}} | {error, any()} when
     Stream :: egrpc:stream(),
     Timeout :: erlang:timeout(),
     State :: any(),
-    Next :: fun((Stream, Timeout) -> {ok, Stream} | {error, any()}).
+    NextRet :: {ok, Stream} | {error, any()},
+    Next :: fun((Stream, Timeout) -> NextRet).
 
--callback recv_msg(Stream, Timeout, Buf, Next, State) -> any() when
+-callback recv_msg(Stream, Timeout, Buf, Next, State) -> {ok, {Stream, State}, Response, Rest} |
+                                                         {error, any()} when
     Stream :: egrpc:stream(),
     Timeout :: erlang:timeout(),
     State :: any(),
     Response :: map(),
     Buf :: binary(),
     Rest :: binary(),
-    Next :: fun((Stream, Timeout, Buf) -> {ok, Stream, Response, Rest} | {error, any()}).
+    NextRet :: {ok, Stream, Response, Rest} | {error, any()},
+    Next :: fun((Stream, Timeout, Buf) -> NextRet).
 
--callback parse_msg(Stream, Buf, Next, State) -> any() when
+-callback parse_msg(Stream, Buf, Next, State) -> more | {ok, {Stream, State}, Response, Rest} | {error, any()} when
     Stream :: egrpc:stream(),
     Buf :: binary(),
     Response :: map(),
     Rest :: binary(),
     State :: any(),
-    Next :: fun((Stream, Buf) -> more | {ok, Stream, Response, Rest} | {error, any()}).
+    NextRet :: more | {ok, Stream, Response, Rest} | {error, any()},
+    Next :: fun((Stream, Buf) -> NextRet).
 
 -optional_callbacks([
     init/1,
@@ -59,7 +64,7 @@
     parse_msg/4
 ]).
 
--spec init(Interceptor :: module(), InitOpts :: any()) -> {module(), any()}.
+-spec init(Interceptor :: module(), InitOpts :: any()) -> {module(), State :: any()}.
 init(I, InitOpts) when is_atom(I) ->
     case is_behaviour_impl(I) andalso function_exported(I, init, 1) of
         true -> {I, I:init(InitOpts)};
