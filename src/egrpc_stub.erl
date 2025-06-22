@@ -59,7 +59,7 @@
     opts :: conn_opts()
 }).
 
--opaque channel() :: #channel{}.
+-type channel() :: #channel{}.
 
 -type value(T) :: T.
 

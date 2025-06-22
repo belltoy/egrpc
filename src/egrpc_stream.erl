@@ -56,7 +56,7 @@
     info :: term()
 }).
 
--opaque stream() :: #stream{}.
+-type stream() :: #stream{}.
 
 -type init_req() :: fun((stream(), Opts :: map()) -> stream()).
 -type send_msg() :: fun((stream(), Request :: map(), IsFin :: fin | nofin) -> stream()).
