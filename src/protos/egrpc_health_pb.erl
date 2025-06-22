@@ -51,7 +51,7 @@
 
 
 %% enumerated types
--type 'grpc.health.v1.HealthCheckResponse.ServingStatus'() :: 'UNKNOWN' | 'SERVING' | 'NOT_SERVING'.
+-type 'grpc.health.v1.HealthCheckResponse.ServingStatus'() :: 'UNKNOWN' | 'SERVING' | 'NOT_SERVING' | 'SERVICE_UNKNOWN'.
 -export_type(['grpc.health.v1.HealthCheckResponse.ServingStatus'/0]).
 
 %% message types
@@ -60,12 +60,20 @@
        }.
 
 -type 'grpc.health.v1.HealthCheckResponse'() ::
-      #{status                  => 'UNKNOWN' | 'SERVING' | 'NOT_SERVING' | integer() % = 1, optional, enum grpc.health.v1.HealthCheckResponse.ServingStatus
+      #{status                  => 'UNKNOWN' | 'SERVING' | 'NOT_SERVING' | 'SERVICE_UNKNOWN' | integer() % = 1, optional, enum grpc.health.v1.HealthCheckResponse.ServingStatus
        }.
 
--export_type(['grpc.health.v1.HealthCheckRequest'/0, 'grpc.health.v1.HealthCheckResponse'/0]).
--type '$msg_name'() :: 'grpc.health.v1.HealthCheckRequest' | 'grpc.health.v1.HealthCheckResponse'.
--type '$msg'() :: 'grpc.health.v1.HealthCheckRequest'() | 'grpc.health.v1.HealthCheckResponse'().
+-type 'grpc.health.v1.HealthListRequest'() ::
+      #{
+       }.
+
+-type 'grpc.health.v1.HealthListResponse'() ::
+      #{statuses                => #{unicode:chardata() => 'grpc.health.v1.HealthCheckResponse'()} % = 1
+       }.
+
+-export_type(['grpc.health.v1.HealthCheckRequest'/0, 'grpc.health.v1.HealthCheckResponse'/0, 'grpc.health.v1.HealthListRequest'/0, 'grpc.health.v1.HealthListResponse'/0]).
+-type '$msg_name'() :: 'grpc.health.v1.HealthCheckRequest' | 'grpc.health.v1.HealthCheckResponse' | 'grpc.health.v1.HealthListRequest' | 'grpc.health.v1.HealthListResponse'.
+-type '$msg'() :: 'grpc.health.v1.HealthCheckRequest'() | 'grpc.health.v1.HealthCheckResponse'() | 'grpc.health.v1.HealthListRequest'() | 'grpc.health.v1.HealthListResponse'().
 -export_type(['$msg_name'/0, '$msg'/0]).
 
 -if(?OTP_RELEASE >= 24).
@@ -86,7 +94,9 @@ encode_msg(Msg, MsgName, Opts) ->
     TrUserData = proplists:get_value(user_data, Opts),
     case MsgName of
         'grpc.health.v1.HealthCheckRequest' -> 'encode_msg_grpc.health.v1.HealthCheckRequest'(id(Msg, TrUserData), TrUserData);
-        'grpc.health.v1.HealthCheckResponse' -> 'encode_msg_grpc.health.v1.HealthCheckResponse'(id(Msg, TrUserData), TrUserData)
+        'grpc.health.v1.HealthCheckResponse' -> 'encode_msg_grpc.health.v1.HealthCheckResponse'(id(Msg, TrUserData), TrUserData);
+        'grpc.health.v1.HealthListRequest' -> 'encode_msg_grpc.health.v1.HealthListRequest'(id(Msg, TrUserData), TrUserData);
+        'grpc.health.v1.HealthListResponse' -> 'encode_msg_grpc.health.v1.HealthListResponse'(id(Msg, TrUserData), TrUserData)
     end.
 
 
@@ -121,9 +131,45 @@ encode_msg(Msg, MsgName, Opts) ->
         _ -> Bin
     end.
 
+'encode_msg_grpc.health.v1.HealthListRequest'(_Msg, _TrUserData) -> <<>>.
+
+'encode_msg_grpc.health.v1.HealthListResponse'(Msg, TrUserData) -> 'encode_msg_grpc.health.v1.HealthListResponse'(Msg, <<>>, TrUserData).
+
+
+'encode_msg_grpc.health.v1.HealthListResponse'(#{} = M, Bin, TrUserData) ->
+    case M of
+        #{statuses := F1} ->
+            TrF1 = 'tr_encode_grpc.health.v1.HealthListResponse.statuses'(F1, TrUserData),
+            if TrF1 == [] -> Bin;
+               true -> 'e_field_grpc.health.v1.HealthListResponse_statuses'(TrF1, Bin, TrUserData)
+            end;
+        _ -> Bin
+    end.
+
+'e_mfield_grpc.health.v1.HealthListResponse_statuses'(Msg, Bin, TrUserData) ->
+    SubBin = 'encode_msg_map<string,grpc.health.v1.HealthCheckResponse>'(Msg, <<>>, TrUserData),
+    Bin2 = e_varint(byte_size(SubBin), Bin),
+    <<Bin2/binary, SubBin/binary>>.
+
+'e_field_grpc.health.v1.HealthListResponse_statuses'([Elem | Rest], Bin, TrUserData) ->
+    Bin2 = <<Bin/binary, 10>>,
+    Bin3 = 'e_mfield_grpc.health.v1.HealthListResponse_statuses'('tr_encode_grpc.health.v1.HealthListResponse.statuses[x]'(Elem, TrUserData), Bin2, TrUserData),
+    'e_field_grpc.health.v1.HealthListResponse_statuses'(Rest, Bin3, TrUserData);
+'e_field_grpc.health.v1.HealthListResponse_statuses'([], Bin, _TrUserData) -> Bin.
+
+'encode_msg_map<string,grpc.health.v1.HealthCheckResponse>'(#{key := F1, value := F2}, Bin, TrUserData) ->
+    B1 = begin TrF1 = id(F1, TrUserData), e_type_string(TrF1, <<Bin/binary, 10>>, TrUserData) end,
+    begin TrF2 = id(F2, TrUserData), 'e_mfield_map<string,grpc.health.v1.HealthCheckResponse>_value'(TrF2, <<B1/binary, 18>>, TrUserData) end.
+
+'e_mfield_map<string,grpc.health.v1.HealthCheckResponse>_value'(Msg, Bin, TrUserData) ->
+    SubBin = 'encode_msg_grpc.health.v1.HealthCheckResponse'(Msg, <<>>, TrUserData),
+    Bin2 = e_varint(byte_size(SubBin), Bin),
+    <<Bin2/binary, SubBin/binary>>.
+
 'e_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'('UNKNOWN', Bin, _TrUserData) -> <<Bin/binary, 0>>;
 'e_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'('SERVING', Bin, _TrUserData) -> <<Bin/binary, 1>>;
 'e_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'('NOT_SERVING', Bin, _TrUserData) -> <<Bin/binary, 2>>;
+'e_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'('SERVICE_UNKNOWN', Bin, _TrUserData) -> <<Bin/binary, 3>>;
 'e_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'(V, Bin, _TrUserData) -> e_varint(V, Bin).
 
 -compile({nowarn_unused_function,e_type_sint/3}).
@@ -265,7 +311,9 @@ decode_msg_1_catch(Bin, MsgName, TrUserData) ->
 -endif.
 
 decode_msg_2_doit('grpc.health.v1.HealthCheckRequest', Bin, TrUserData) -> id('decode_msg_grpc.health.v1.HealthCheckRequest'(Bin, TrUserData), TrUserData);
-decode_msg_2_doit('grpc.health.v1.HealthCheckResponse', Bin, TrUserData) -> id('decode_msg_grpc.health.v1.HealthCheckResponse'(Bin, TrUserData), TrUserData).
+decode_msg_2_doit('grpc.health.v1.HealthCheckResponse', Bin, TrUserData) -> id('decode_msg_grpc.health.v1.HealthCheckResponse'(Bin, TrUserData), TrUserData);
+decode_msg_2_doit('grpc.health.v1.HealthListRequest', Bin, TrUserData) -> id('decode_msg_grpc.health.v1.HealthListRequest'(Bin, TrUserData), TrUserData);
+decode_msg_2_doit('grpc.health.v1.HealthListResponse', Bin, TrUserData) -> id('decode_msg_grpc.health.v1.HealthListResponse'(Bin, TrUserData), TrUserData).
 
 
 
@@ -357,9 +405,159 @@ decode_msg_2_doit('grpc.health.v1.HealthCheckResponse', Bin, TrUserData) -> id('
 
 'skip_64_grpc.health.v1.HealthCheckResponse'(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> 'dfp_read_field_def_grpc.health.v1.HealthCheckResponse'(Rest, Z1, Z2, F, F@_1, TrUserData).
 
+'decode_msg_grpc.health.v1.HealthListRequest'(Bin, TrUserData) -> 'dfp_read_field_def_grpc.health.v1.HealthListRequest'(Bin, 0, 0, 0, TrUserData).
+
+'dfp_read_field_def_grpc.health.v1.HealthListRequest'(<<>>, 0, 0, _, _) -> #{};
+'dfp_read_field_def_grpc.health.v1.HealthListRequest'(Other, Z1, Z2, F, TrUserData) -> 'dg_read_field_def_grpc.health.v1.HealthListRequest'(Other, Z1, Z2, F, TrUserData).
+
+'dg_read_field_def_grpc.health.v1.HealthListRequest'(<<1:1, X:7, Rest/binary>>, N, Acc, F, TrUserData) when N < 32 - 7 -> 'dg_read_field_def_grpc.health.v1.HealthListRequest'(Rest, N + 7, X bsl N + Acc, F, TrUserData);
+'dg_read_field_def_grpc.health.v1.HealthListRequest'(<<0:1, X:7, Rest/binary>>, N, Acc, _, TrUserData) ->
+    Key = X bsl N + Acc,
+    case Key band 7 of
+        0 -> 'skip_varint_grpc.health.v1.HealthListRequest'(Rest, 0, 0, Key bsr 3, TrUserData);
+        1 -> 'skip_64_grpc.health.v1.HealthListRequest'(Rest, 0, 0, Key bsr 3, TrUserData);
+        2 -> 'skip_length_delimited_grpc.health.v1.HealthListRequest'(Rest, 0, 0, Key bsr 3, TrUserData);
+        3 -> 'skip_group_grpc.health.v1.HealthListRequest'(Rest, 0, 0, Key bsr 3, TrUserData);
+        5 -> 'skip_32_grpc.health.v1.HealthListRequest'(Rest, 0, 0, Key bsr 3, TrUserData)
+    end;
+'dg_read_field_def_grpc.health.v1.HealthListRequest'(<<>>, 0, 0, _, _) -> #{}.
+
+'skip_varint_grpc.health.v1.HealthListRequest'(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, TrUserData) -> 'skip_varint_grpc.health.v1.HealthListRequest'(Rest, Z1, Z2, F, TrUserData);
+'skip_varint_grpc.health.v1.HealthListRequest'(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, TrUserData) -> 'dfp_read_field_def_grpc.health.v1.HealthListRequest'(Rest, Z1, Z2, F, TrUserData).
+
+'skip_length_delimited_grpc.health.v1.HealthListRequest'(<<1:1, X:7, Rest/binary>>, N, Acc, F, TrUserData) when N < 57 -> 'skip_length_delimited_grpc.health.v1.HealthListRequest'(Rest, N + 7, X bsl N + Acc, F, TrUserData);
+'skip_length_delimited_grpc.health.v1.HealthListRequest'(<<0:1, X:7, Rest/binary>>, N, Acc, F, TrUserData) ->
+    Length = X bsl N + Acc,
+    <<_:Length/binary, Rest2/binary>> = Rest,
+    'dfp_read_field_def_grpc.health.v1.HealthListRequest'(Rest2, 0, 0, F, TrUserData).
+
+'skip_group_grpc.health.v1.HealthListRequest'(Bin, _, Z2, FNum, TrUserData) ->
+    {_, Rest} = read_group(Bin, FNum),
+    'dfp_read_field_def_grpc.health.v1.HealthListRequest'(Rest, 0, Z2, FNum, TrUserData).
+
+'skip_32_grpc.health.v1.HealthListRequest'(<<_:32, Rest/binary>>, Z1, Z2, F, TrUserData) -> 'dfp_read_field_def_grpc.health.v1.HealthListRequest'(Rest, Z1, Z2, F, TrUserData).
+
+'skip_64_grpc.health.v1.HealthListRequest'(<<_:64, Rest/binary>>, Z1, Z2, F, TrUserData) -> 'dfp_read_field_def_grpc.health.v1.HealthListRequest'(Rest, Z1, Z2, F, TrUserData).
+
+'decode_msg_grpc.health.v1.HealthListResponse'(Bin, TrUserData) -> 'dfp_read_field_def_grpc.health.v1.HealthListResponse'(Bin, 0, 0, 0, 'tr_decode_init_default_grpc.health.v1.HealthListResponse.statuses'([], TrUserData), TrUserData).
+
+'dfp_read_field_def_grpc.health.v1.HealthListResponse'(<<10, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> 'd_field_grpc.health.v1.HealthListResponse_statuses'(Rest, Z1, Z2, F, F@_1, TrUserData);
+'dfp_read_field_def_grpc.health.v1.HealthListResponse'(<<>>, 0, 0, _, R1, TrUserData) -> #{statuses => 'tr_decode_repeated_finalize_grpc.health.v1.HealthListResponse.statuses'(R1, TrUserData)};
+'dfp_read_field_def_grpc.health.v1.HealthListResponse'(Other, Z1, Z2, F, F@_1, TrUserData) -> 'dg_read_field_def_grpc.health.v1.HealthListResponse'(Other, Z1, Z2, F, F@_1, TrUserData).
+
+'dg_read_field_def_grpc.health.v1.HealthListResponse'(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 32 - 7 -> 'dg_read_field_def_grpc.health.v1.HealthListResponse'(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
+'dg_read_field_def_grpc.health.v1.HealthListResponse'(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, TrUserData) ->
+    Key = X bsl N + Acc,
+    case Key of
+        10 -> 'd_field_grpc.health.v1.HealthListResponse_statuses'(Rest, 0, 0, 0, F@_1, TrUserData);
+        _ ->
+            case Key band 7 of
+                0 -> 'skip_varint_grpc.health.v1.HealthListResponse'(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
+                1 -> 'skip_64_grpc.health.v1.HealthListResponse'(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
+                2 -> 'skip_length_delimited_grpc.health.v1.HealthListResponse'(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
+                3 -> 'skip_group_grpc.health.v1.HealthListResponse'(Rest, 0, 0, Key bsr 3, F@_1, TrUserData);
+                5 -> 'skip_32_grpc.health.v1.HealthListResponse'(Rest, 0, 0, Key bsr 3, F@_1, TrUserData)
+            end
+    end;
+'dg_read_field_def_grpc.health.v1.HealthListResponse'(<<>>, 0, 0, _, R1, TrUserData) -> #{statuses => 'tr_decode_repeated_finalize_grpc.health.v1.HealthListResponse.statuses'(R1, TrUserData)}.
+
+'d_field_grpc.health.v1.HealthListResponse_statuses'(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 57 -> 'd_field_grpc.health.v1.HealthListResponse_statuses'(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
+'d_field_grpc.health.v1.HealthListResponse_statuses'(<<0:1, X:7, Rest/binary>>, N, Acc, F, Prev, TrUserData) ->
+    {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bs:Len/binary, Rest2/binary>> = Rest, {id('decode_msg_map<string,grpc.health.v1.HealthCheckResponse>'(Bs, TrUserData), TrUserData), Rest2} end,
+    'dfp_read_field_def_grpc.health.v1.HealthListResponse'(RestF, 0, 0, F, 'tr_decode_repeated_add_elem_grpc.health.v1.HealthListResponse.statuses'(NewFValue, Prev, TrUserData), TrUserData).
+
+'skip_varint_grpc.health.v1.HealthListResponse'(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> 'skip_varint_grpc.health.v1.HealthListResponse'(Rest, Z1, Z2, F, F@_1, TrUserData);
+'skip_varint_grpc.health.v1.HealthListResponse'(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> 'dfp_read_field_def_grpc.health.v1.HealthListResponse'(Rest, Z1, Z2, F, F@_1, TrUserData).
+
+'skip_length_delimited_grpc.health.v1.HealthListResponse'(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) when N < 57 -> 'skip_length_delimited_grpc.health.v1.HealthListResponse'(Rest, N + 7, X bsl N + Acc, F, F@_1, TrUserData);
+'skip_length_delimited_grpc.health.v1.HealthListResponse'(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, TrUserData) ->
+    Length = X bsl N + Acc,
+    <<_:Length/binary, Rest2/binary>> = Rest,
+    'dfp_read_field_def_grpc.health.v1.HealthListResponse'(Rest2, 0, 0, F, F@_1, TrUserData).
+
+'skip_group_grpc.health.v1.HealthListResponse'(Bin, _, Z2, FNum, F@_1, TrUserData) ->
+    {_, Rest} = read_group(Bin, FNum),
+    'dfp_read_field_def_grpc.health.v1.HealthListResponse'(Rest, 0, Z2, FNum, F@_1, TrUserData).
+
+'skip_32_grpc.health.v1.HealthListResponse'(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> 'dfp_read_field_def_grpc.health.v1.HealthListResponse'(Rest, Z1, Z2, F, F@_1, TrUserData).
+
+'skip_64_grpc.health.v1.HealthListResponse'(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, TrUserData) -> 'dfp_read_field_def_grpc.health.v1.HealthListResponse'(Rest, Z1, Z2, F, F@_1, TrUserData).
+
+'decode_msg_map<string,grpc.health.v1.HealthCheckResponse>'(Bin, TrUserData) -> 'dfp_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(Bin, 0, 0, 0, id(<<>>, TrUserData), id('$undef', TrUserData), TrUserData).
+
+'dfp_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(<<10, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> 'd_field_map<string,grpc.health.v1.HealthCheckResponse>_key'(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+'dfp_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(<<18, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> 'd_field_map<string,grpc.health.v1.HealthCheckResponse>_value'(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+'dfp_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(<<>>, 0, 0, _, F@_1, F@_2, _) ->
+    S1 = #{key => F@_1},
+    if F@_2 == '$undef' -> S1;
+       true -> S1#{value => F@_2}
+    end;
+'dfp_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(Other, Z1, Z2, F, F@_1, F@_2, TrUserData) -> 'dg_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(Other, Z1, Z2, F, F@_1, F@_2, TrUserData).
+
+'dg_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 32 - 7 ->
+    'dg_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+'dg_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(<<0:1, X:7, Rest/binary>>, N, Acc, _, F@_1, F@_2, TrUserData) ->
+    Key = X bsl N + Acc,
+    case Key of
+        10 -> 'd_field_map<string,grpc.health.v1.HealthCheckResponse>_key'(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        18 -> 'd_field_map<string,grpc.health.v1.HealthCheckResponse>_value'(Rest, 0, 0, 0, F@_1, F@_2, TrUserData);
+        _ ->
+            case Key band 7 of
+                0 -> 'skip_varint_map<string,grpc.health.v1.HealthCheckResponse>'(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                1 -> 'skip_64_map<string,grpc.health.v1.HealthCheckResponse>'(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                2 -> 'skip_length_delimited_map<string,grpc.health.v1.HealthCheckResponse>'(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                3 -> 'skip_group_map<string,grpc.health.v1.HealthCheckResponse>'(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData);
+                5 -> 'skip_32_map<string,grpc.health.v1.HealthCheckResponse>'(Rest, 0, 0, Key bsr 3, F@_1, F@_2, TrUserData)
+            end
+    end;
+'dg_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(<<>>, 0, 0, _, F@_1, F@_2, _) ->
+    S1 = #{key => F@_1},
+    if F@_2 == '$undef' -> S1;
+       true -> S1#{value => F@_2}
+    end.
+
+'d_field_map<string,grpc.health.v1.HealthCheckResponse>_key'(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 ->
+    'd_field_map<string,grpc.health.v1.HealthCheckResponse>_key'(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+'d_field_map<string,grpc.health.v1.HealthCheckResponse>_key'(<<0:1, X:7, Rest/binary>>, N, Acc, F, _, F@_2, TrUserData) ->
+    {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bytes:Len/binary, Rest2/binary>> = Rest, Bytes2 = binary:copy(Bytes), {id(Bytes2, TrUserData), Rest2} end,
+    'dfp_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(RestF, 0, 0, F, NewFValue, F@_2, TrUserData).
+
+'d_field_map<string,grpc.health.v1.HealthCheckResponse>_value'(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 ->
+    'd_field_map<string,grpc.health.v1.HealthCheckResponse>_value'(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+'d_field_map<string,grpc.health.v1.HealthCheckResponse>_value'(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, Prev, TrUserData) ->
+    {NewFValue, RestF} = begin Len = X bsl N + Acc, <<Bs:Len/binary, Rest2/binary>> = Rest, {id('decode_msg_grpc.health.v1.HealthCheckResponse'(Bs, TrUserData), TrUserData), Rest2} end,
+    'dfp_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(RestF,
+                                                                        0,
+                                                                        0,
+                                                                        F,
+                                                                        F@_1,
+                                                                        if Prev == '$undef' -> NewFValue;
+                                                                           true -> 'merge_msg_grpc.health.v1.HealthCheckResponse'(Prev, NewFValue, TrUserData)
+                                                                        end,
+                                                                        TrUserData).
+
+'skip_varint_map<string,grpc.health.v1.HealthCheckResponse>'(<<1:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> 'skip_varint_map<string,grpc.health.v1.HealthCheckResponse>'(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData);
+'skip_varint_map<string,grpc.health.v1.HealthCheckResponse>'(<<0:1, _:7, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> 'dfp_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+
+'skip_length_delimited_map<string,grpc.health.v1.HealthCheckResponse>'(<<1:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) when N < 57 ->
+    'skip_length_delimited_map<string,grpc.health.v1.HealthCheckResponse>'(Rest, N + 7, X bsl N + Acc, F, F@_1, F@_2, TrUserData);
+'skip_length_delimited_map<string,grpc.health.v1.HealthCheckResponse>'(<<0:1, X:7, Rest/binary>>, N, Acc, F, F@_1, F@_2, TrUserData) ->
+    Length = X bsl N + Acc,
+    <<_:Length/binary, Rest2/binary>> = Rest,
+    'dfp_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(Rest2, 0, 0, F, F@_1, F@_2, TrUserData).
+
+'skip_group_map<string,grpc.health.v1.HealthCheckResponse>'(Bin, _, Z2, FNum, F@_1, F@_2, TrUserData) ->
+    {_, Rest} = read_group(Bin, FNum),
+    'dfp_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(Rest, 0, Z2, FNum, F@_1, F@_2, TrUserData).
+
+'skip_32_map<string,grpc.health.v1.HealthCheckResponse>'(<<_:32, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> 'dfp_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+
+'skip_64_map<string,grpc.health.v1.HealthCheckResponse>'(<<_:64, Rest/binary>>, Z1, Z2, F, F@_1, F@_2, TrUserData) -> 'dfp_read_field_def_map<string,grpc.health.v1.HealthCheckResponse>'(Rest, Z1, Z2, F, F@_1, F@_2, TrUserData).
+
 'd_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'(0) -> 'UNKNOWN';
 'd_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'(1) -> 'SERVING';
 'd_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'(2) -> 'NOT_SERVING';
+'d_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'(3) -> 'SERVICE_UNKNOWN';
 'd_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'(V) -> V.
 
 read_group(Bin, FieldNum) ->
@@ -426,7 +624,9 @@ merge_msgs(Prev, New, MsgName, Opts) ->
     TrUserData = proplists:get_value(user_data, Opts),
     case MsgName of
         'grpc.health.v1.HealthCheckRequest' -> 'merge_msg_grpc.health.v1.HealthCheckRequest'(Prev, New, TrUserData);
-        'grpc.health.v1.HealthCheckResponse' -> 'merge_msg_grpc.health.v1.HealthCheckResponse'(Prev, New, TrUserData)
+        'grpc.health.v1.HealthCheckResponse' -> 'merge_msg_grpc.health.v1.HealthCheckResponse'(Prev, New, TrUserData);
+        'grpc.health.v1.HealthListRequest' -> 'merge_msg_grpc.health.v1.HealthListRequest'(Prev, New, TrUserData);
+        'grpc.health.v1.HealthListResponse' -> 'merge_msg_grpc.health.v1.HealthListResponse'(Prev, New, TrUserData)
     end.
 
 -compile({nowarn_unused_function,'merge_msg_grpc.health.v1.HealthCheckRequest'/3}).
@@ -447,6 +647,19 @@ merge_msgs(Prev, New, MsgName, Opts) ->
         _ -> S1
     end.
 
+-compile({nowarn_unused_function,'merge_msg_grpc.health.v1.HealthListRequest'/3}).
+'merge_msg_grpc.health.v1.HealthListRequest'(_Prev, New, _TrUserData) -> New.
+
+-compile({nowarn_unused_function,'merge_msg_grpc.health.v1.HealthListResponse'/3}).
+'merge_msg_grpc.health.v1.HealthListResponse'(PMsg, NMsg, TrUserData) ->
+    S1 = #{},
+    case {PMsg, NMsg} of
+        {#{statuses := PFstatuses}, #{statuses := NFstatuses}} -> S1#{statuses => 'tr_merge_grpc.health.v1.HealthListResponse.statuses'(PFstatuses, NFstatuses, TrUserData)};
+        {_, #{statuses := NFstatuses}} -> S1#{statuses => NFstatuses};
+        {#{statuses := PFstatuses}, _} -> S1#{statuses => PFstatuses};
+        {_, _} -> S1
+    end.
+
 
 verify_msg(Msg, MsgName) when is_atom(MsgName) -> verify_msg(Msg, MsgName, []).
 
@@ -455,6 +668,8 @@ verify_msg(Msg, MsgName, Opts) ->
     case MsgName of
         'grpc.health.v1.HealthCheckRequest' -> 'v_msg_grpc.health.v1.HealthCheckRequest'(Msg, [MsgName], TrUserData);
         'grpc.health.v1.HealthCheckResponse' -> 'v_msg_grpc.health.v1.HealthCheckResponse'(Msg, [MsgName], TrUserData);
+        'grpc.health.v1.HealthListRequest' -> 'v_msg_grpc.health.v1.HealthListRequest'(Msg, [MsgName], TrUserData);
+        'grpc.health.v1.HealthListResponse' -> 'v_msg_grpc.health.v1.HealthListResponse'(Msg, [MsgName], TrUserData);
         _ -> mk_type_error(not_a_known_message, Msg, [])
     end.
 
@@ -474,6 +689,10 @@ verify_msg(Msg, MsgName, Opts) ->
 'v_msg_grpc.health.v1.HealthCheckRequest'(M, Path, _TrUserData) when is_map(M) -> mk_type_error({missing_fields, [] -- maps:keys(M), 'grpc.health.v1.HealthCheckRequest'}, M, Path);
 'v_msg_grpc.health.v1.HealthCheckRequest'(X, Path, _TrUserData) -> mk_type_error({expected_msg, 'grpc.health.v1.HealthCheckRequest'}, X, Path).
 
+-compile({nowarn_unused_function,'v_submsg_grpc.health.v1.HealthCheckResponse'/3}).
+-dialyzer({nowarn_function,'v_submsg_grpc.health.v1.HealthCheckResponse'/3}).
+'v_submsg_grpc.health.v1.HealthCheckResponse'(Msg, Path, TrUserData) -> 'v_msg_grpc.health.v1.HealthCheckResponse'(Msg, Path, TrUserData).
+
 -compile({nowarn_unused_function,'v_msg_grpc.health.v1.HealthCheckResponse'/3}).
 -dialyzer({nowarn_function,'v_msg_grpc.health.v1.HealthCheckResponse'/3}).
 'v_msg_grpc.health.v1.HealthCheckResponse'(#{} = M, Path, TrUserData) ->
@@ -489,11 +708,35 @@ verify_msg(Msg, MsgName, Opts) ->
 'v_msg_grpc.health.v1.HealthCheckResponse'(M, Path, _TrUserData) when is_map(M) -> mk_type_error({missing_fields, [] -- maps:keys(M), 'grpc.health.v1.HealthCheckResponse'}, M, Path);
 'v_msg_grpc.health.v1.HealthCheckResponse'(X, Path, _TrUserData) -> mk_type_error({expected_msg, 'grpc.health.v1.HealthCheckResponse'}, X, Path).
 
+-compile({nowarn_unused_function,'v_msg_grpc.health.v1.HealthListRequest'/3}).
+-dialyzer({nowarn_function,'v_msg_grpc.health.v1.HealthListRequest'/3}).
+'v_msg_grpc.health.v1.HealthListRequest'(#{} = M, Path, _) ->
+    lists:foreach(fun (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path) end, maps:keys(M)),
+    ok;
+'v_msg_grpc.health.v1.HealthListRequest'(M, Path, _TrUserData) when is_map(M) -> mk_type_error({missing_fields, [] -- maps:keys(M), 'grpc.health.v1.HealthListRequest'}, M, Path);
+'v_msg_grpc.health.v1.HealthListRequest'(X, Path, _TrUserData) -> mk_type_error({expected_msg, 'grpc.health.v1.HealthListRequest'}, X, Path).
+
+-compile({nowarn_unused_function,'v_msg_grpc.health.v1.HealthListResponse'/3}).
+-dialyzer({nowarn_function,'v_msg_grpc.health.v1.HealthListResponse'/3}).
+'v_msg_grpc.health.v1.HealthListResponse'(#{} = M, Path, TrUserData) ->
+    case M of
+        #{statuses := F1} -> 'v_map<string,grpc.health.v1.HealthCheckResponse>'(F1, [statuses | Path], TrUserData);
+        _ -> ok
+    end,
+    lists:foreach(fun (statuses) -> ok;
+                      (OtherKey) -> mk_type_error({extraneous_key, OtherKey}, M, Path)
+                  end,
+                  maps:keys(M)),
+    ok;
+'v_msg_grpc.health.v1.HealthListResponse'(M, Path, _TrUserData) when is_map(M) -> mk_type_error({missing_fields, [] -- maps:keys(M), 'grpc.health.v1.HealthListResponse'}, M, Path);
+'v_msg_grpc.health.v1.HealthListResponse'(X, Path, _TrUserData) -> mk_type_error({expected_msg, 'grpc.health.v1.HealthListResponse'}, X, Path).
+
 -compile({nowarn_unused_function,'v_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'/3}).
 -dialyzer({nowarn_function,'v_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'/3}).
 'v_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'('UNKNOWN', _Path, _TrUserData) -> ok;
 'v_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'('SERVING', _Path, _TrUserData) -> ok;
 'v_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'('NOT_SERVING', _Path, _TrUserData) -> ok;
+'v_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'('SERVICE_UNKNOWN', _Path, _TrUserData) -> ok;
 'v_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'(V, _Path, _TrUserData) when -2147483648 =< V, V =< 2147483647, is_integer(V) -> ok;
 'v_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'(X, Path, _TrUserData) -> mk_type_error({invalid_enum, 'grpc.health.v1.HealthCheckResponse.ServingStatus'}, X, Path).
 
@@ -507,6 +750,13 @@ v_type_string(S, Path, _TrUserData) when is_list(S); is_binary(S) ->
         error:badarg -> mk_type_error(bad_unicode_string, S, Path)
     end;
 v_type_string(X, Path, _TrUserData) -> mk_type_error(bad_unicode_string, X, Path).
+
+-compile({nowarn_unused_function,'v_map<string,grpc.health.v1.HealthCheckResponse>'/3}).
+-dialyzer({nowarn_function,'v_map<string,grpc.health.v1.HealthCheckResponse>'/3}).
+'v_map<string,grpc.health.v1.HealthCheckResponse>'(M, Path, TrUserData) when is_map(M) ->
+    [begin v_type_string(Key, [key | Path], TrUserData), 'v_submsg_grpc.health.v1.HealthCheckResponse'(Value, [value | Path], TrUserData) end || {Key, Value} <- maps:to_list(M)],
+    ok;
+'v_map<string,grpc.health.v1.HealthCheckResponse>'(X, Path, _TrUserData) -> mk_type_error(invalid_map, X, Path).
 
 -compile({nowarn_unused_function,mk_type_error/3}).
 -spec mk_type_error(_, _, list()) -> no_return().
@@ -543,6 +793,47 @@ cons(Elem, Acc, _TrUserData) -> [Elem | Acc].
 -compile({nowarn_unused_function,'erlang_++'/3}).
 -compile({inline,'erlang_++'/3}).
 'erlang_++'(A, B, _TrUserData) -> A ++ B.
+-compile({inline,'tr_decode_init_default_grpc.health.v1.HealthListResponse.statuses'/2}).
+'tr_decode_init_default_grpc.health.v1.HealthListResponse.statuses'(_, _) -> mt_empty_map_m().
+
+-compile({inline,'tr_merge_grpc.health.v1.HealthListResponse.statuses'/3}).
+'tr_merge_grpc.health.v1.HealthListResponse.statuses'(X1, X2, _) -> mt_merge_maps_m(X1, X2).
+
+-compile({inline,'tr_decode_repeated_finalize_grpc.health.v1.HealthListResponse.statuses'/2}).
+'tr_decode_repeated_finalize_grpc.health.v1.HealthListResponse.statuses'(L, TrUserData) -> id(L, TrUserData).
+
+-compile({inline,'tr_encode_grpc.health.v1.HealthListResponse.statuses'/2}).
+'tr_encode_grpc.health.v1.HealthListResponse.statuses'(X, _) -> mt_map_to_list_m(X).
+
+-compile({inline,'tr_decode_repeated_add_elem_grpc.health.v1.HealthListResponse.statuses'/3}).
+'tr_decode_repeated_add_elem_grpc.health.v1.HealthListResponse.statuses'(Elem, L, _) -> mt_add_item_m_verify_value(Elem, L).
+
+-compile({inline,'tr_encode_grpc.health.v1.HealthListResponse.statuses[x]'/2}).
+'tr_encode_grpc.health.v1.HealthListResponse.statuses[x]'(X, _) -> mt_maptuple_to_pseudomsg_m(X).
+
+-compile({inline,mt_maptuple_to_pseudomsg_m/1}).
+mt_maptuple_to_pseudomsg_m({K, V}) -> #{key => K, value => V}.
+
+
+-compile({inline,mt_map_to_list_m/1}).
+mt_map_to_list_m(M) -> maps:to_list(M).
+
+
+-compile({inline,mt_empty_map_m/0}).
+mt_empty_map_m() -> #{}.
+
+
+-compile({inline,mt_add_item_m_verify_value/2}).
+mt_add_item_m_verify_value(#{key := K, value := V}, M) ->
+    if V =:= '$undef' -> error({gpb_error, missing_value});
+       true -> M#{K => V}
+    end.
+
+
+-compile({inline,mt_merge_maps_m/2}).
+mt_merge_maps_m(M1, M2) -> maps:merge(M1, M2).
+
+
 
 to_json(Msg, MsgName) when is_map(Msg), is_atom(MsgName) -> to_json(Msg, MsgName, []).
 
@@ -555,6 +846,8 @@ to_json(Msg, MsgName, Opts) ->
     case MsgName of
         'grpc.health.v1.HealthCheckRequest' -> 'to_json_msg_grpc.health.v1.HealthCheckRequest'(id(Msg, TrUserData), TrUserData);
         'grpc.health.v1.HealthCheckResponse' -> 'to_json_msg_grpc.health.v1.HealthCheckResponse'(id(Msg, TrUserData), TrUserData);
+        'grpc.health.v1.HealthListRequest' -> 'to_json_msg_grpc.health.v1.HealthListRequest'(id(Msg, TrUserData), TrUserData);
+        'grpc.health.v1.HealthListResponse' -> 'to_json_msg_grpc.health.v1.HealthListResponse'(id(Msg, TrUserData), TrUserData);
         X -> error({gpb_error, {no_such_message, X}})
     end.
 
@@ -590,6 +883,19 @@ to_json(Msg, MsgName, Opts) ->
                         _ -> J0
                     end).
 
+'to_json_msg_grpc.health.v1.HealthListRequest'(_Msg, _TrUserData) -> tj_finalize_obj(tj_new_object()).
+
+'to_json_msg_grpc.health.v1.HealthListResponse'(#{} = M, TrUserData) ->
+    J0 = tj_new_object(),
+    tj_finalize_obj(case M of
+                        #{statuses := F1} ->
+                            TrF1 = 'tr_encode_grpc.health.v1.HealthListResponse.statuses'(F1, TrUserData),
+                            if TrF1 == [] -> J0;
+                               true -> tj_add_field(<<"statuses">>, tj_mapfield_fold(fun (Elem) -> 'tr_encode_grpc.health.v1.HealthListResponse.statuses[x]'(Elem, TrUserData) end, fun (V) -> 'to_json_msg_grpc.health.v1.HealthCheckResponse'(V, TrUserData) end, TrF1), J0)
+                            end;
+                        _ -> J0
+                    end).
+
 %% map object format helpers
 %% For example jsx, jiffy, others
 -compile({nowarn_unused_function,tj_new_object/0}).
@@ -603,6 +909,20 @@ tj_finalize_obj(Object) -> Object.
 
 -compile({nowarn_unused_function,tj_array/1}).
 tj_array(L) -> L.
+
+tj_mapfield_fold(TrElemF, ValueToJsonF, MapfieldElems) ->
+    tj_finalize_obj(lists:foldl(fun (Elem, Obj) ->
+                                        #{key := K, value := V} = TrElemF(Elem),
+                                        tj_add_field(tj_mapfield_key_to_str(K), ValueToJsonF(V), Obj)
+                                end,
+                                tj_new_object(),
+                                MapfieldElems)).
+
+-compile({nowarn_unused_function,tj_mapfield_key_to_str/1}).
+tj_mapfield_key_to_str(N) when is_integer(N) -> tj_string(integer_to_list(N));
+tj_mapfield_key_to_str(true) -> tj_string("true");
+tj_mapfield_key_to_str(false) -> tj_string("false");
+tj_mapfield_key_to_str(String) when is_list(String); is_binary(String) -> tj_string(String).
 
 tj_string(Value) -> unicode:characters_to_binary(Value).
 
@@ -627,7 +947,9 @@ from_json_1_catch(Json, MsgName, TrUserData) ->
 -endif.
 
 from_json_2_doit('grpc.health.v1.HealthCheckRequest', Json, TrUserData) -> id('from_json_msg_grpc.health.v1.HealthCheckRequest'(Json, TrUserData), TrUserData);
-from_json_2_doit('grpc.health.v1.HealthCheckResponse', Json, TrUserData) -> id('from_json_msg_grpc.health.v1.HealthCheckResponse'(Json, TrUserData), TrUserData).
+from_json_2_doit('grpc.health.v1.HealthCheckResponse', Json, TrUserData) -> id('from_json_msg_grpc.health.v1.HealthCheckResponse'(Json, TrUserData), TrUserData);
+from_json_2_doit('grpc.health.v1.HealthListRequest', Json, TrUserData) -> id('from_json_msg_grpc.health.v1.HealthListRequest'(Json, TrUserData), TrUserData);
+from_json_2_doit('grpc.health.v1.HealthListResponse', Json, TrUserData) -> id('from_json_msg_grpc.health.v1.HealthListResponse'(Json, TrUserData), TrUserData).
 
 'from_json_msg_grpc.health.v1.HealthCheckRequest'(Json, TrUserData) -> 'fj_msg_grpc.health.v1.HealthCheckRequest'(fj_next(fj_iter(Json)), #{service => id(<<>>, TrUserData)}, TrUserData).
 
@@ -655,9 +977,50 @@ from_json_2_doit('grpc.health.v1.HealthCheckResponse', Json, TrUserData) -> id('
     'fj_msg_grpc.health.v1.HealthCheckResponse'(fj_next(JRest), EMsg2, TrUserData);
 'fj_msg_grpc.health.v1.HealthCheckResponse'(none, EMsg, _TrUserData) -> EMsg.
 
+'from_json_msg_grpc.health.v1.HealthListRequest'(_Json, _TrUserData) -> #{}.
+
+'from_json_msg_grpc.health.v1.HealthListResponse'(Json, TrUserData) -> 'fj_msg_grpc.health.v1.HealthListResponse'(fj_next(fj_iter(Json)), #{statuses => 'tr_decode_init_default_grpc.health.v1.HealthListResponse.statuses'([], TrUserData)}, TrUserData).
+
+'fj_msg_grpc.health.v1.HealthListResponse'({JKey, JValue, JRest}, EMsg, TrUserData) ->
+    EMsg2 = case JKey of
+                <<"statuses">> ->
+                    if JValue =:= binary -> EMsg;
+                       true ->
+                           EMsg#{statuses =>
+                                     id(fj_mapfield_fold('map<string,grpc.health.v1.HealthCheckResponse>',
+                                                         fun 'tr_decode_init_default_grpc.health.v1.HealthListResponse.statuses'/2,
+                                                         fun 'tr_decode_repeated_add_elem_grpc.health.v1.HealthListResponse.statuses'/3,
+                                                         fun 'tr_decode_repeated_finalize_grpc.health.v1.HealthListResponse.statuses'/2,
+                                                         fun (Key) -> id(fj_string(Key), TrUserData) end,
+                                                         fun (Value) -> id('from_json_msg_grpc.health.v1.HealthCheckResponse'(Value, TrUserData), TrUserData) end,
+                                                         id(JValue, TrUserData),
+                                                         TrUserData),
+                                        TrUserData)}
+                    end;
+                _ -> EMsg
+            end,
+    'fj_msg_grpc.health.v1.HealthListResponse'(fj_next(JRest), EMsg2, TrUserData);
+'fj_msg_grpc.health.v1.HealthListResponse'(none, EMsg, _TrUserData) -> EMsg.
+
 fj_iter(Map) -> maps:iterator(Map).
 
 fj_next(Iter) -> maps:next(Iter).
+
+-compile({nowarn_unused_function,fj_array/1}).
+fj_array(L) -> L.
+
+fj_mapfield_fold(MapMsgName, New, AddElem, Finalize, DecodeKey, DecodeValue, JMapfield, TrUserData) -> Finalize(fj_mapfield_fold_aux(fj_iter(JMapfield), MapMsgName, DecodeKey, DecodeValue, AddElem, New([], TrUserData), TrUserData), TrUserData).
+
+fj_mapfield_fold_aux(JIter, MapMsgName, DecodeKey, DecodeValue, AddElem, Acc, TrUserData) ->
+    case fj_next(JIter) of
+        {JKey, JValue, JRest} ->
+            EKey = DecodeKey(JKey),
+            EValue = DecodeValue(JValue),
+            TmpMsg = #{key => EKey, value => EValue},
+            Acc1 = AddElem(TmpMsg, Acc, TrUserData),
+            fj_mapfield_fold_aux(JRest, MapMsgName, DecodeKey, DecodeValue, AddElem, Acc1, TrUserData);
+        none -> Acc
+    end.
 
 -compile({nowarn_unused_function,'fj_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'/1}).
 'fj_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'(S) when is_binary(S) ->
@@ -665,9 +1028,11 @@ fj_next(Iter) -> maps:next(Iter).
         <<"UNKNOWN">> -> 'UNKNOWN';
         <<"SERVING">> -> 'SERVING';
         <<"NOT_SERVING">> -> 'NOT_SERVING';
+        <<"SERVICE_UNKNOWN">> -> 'SERVICE_UNKNOWN';
         <<"0">> -> 'UNKNOWN';
         <<"1">> -> 'SERVING';
         <<"2">> -> 'NOT_SERVING';
+        <<"3">> -> 'SERVICE_UNKNOWN';
         _ -> 'UNKNOWN'
     end;
 'fj_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'(N) when is_integer(N) -> 'd_enum_grpc.health.v1.HealthCheckResponse.ServingStatus'(N);
@@ -680,18 +1045,20 @@ fj_string(S) when is_binary(S); is_list(S) -> unicode:characters_to_binary(S).
 
 
 get_msg_defs() ->
-    [{{enum, 'grpc.health.v1.HealthCheckResponse.ServingStatus'}, [{'UNKNOWN', 0}, {'SERVING', 1}, {'NOT_SERVING', 2}]},
+    [{{enum, 'grpc.health.v1.HealthCheckResponse.ServingStatus'}, [{'UNKNOWN', 0}, {'SERVING', 1}, {'NOT_SERVING', 2}, {'SERVICE_UNKNOWN', 3}]},
      {{msg, 'grpc.health.v1.HealthCheckRequest'}, [#{name => service, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}]},
-     {{msg, 'grpc.health.v1.HealthCheckResponse'}, [#{name => status, fnum => 1, rnum => 2, type => {enum, 'grpc.health.v1.HealthCheckResponse.ServingStatus'}, occurrence => optional, opts => []}]}].
+     {{msg, 'grpc.health.v1.HealthCheckResponse'}, [#{name => status, fnum => 1, rnum => 2, type => {enum, 'grpc.health.v1.HealthCheckResponse.ServingStatus'}, occurrence => optional, opts => []}]},
+     {{msg, 'grpc.health.v1.HealthListRequest'}, []},
+     {{msg, 'grpc.health.v1.HealthListResponse'}, [#{name => statuses, fnum => 1, rnum => 2, type => {map, string, {msg, 'grpc.health.v1.HealthCheckResponse'}}, occurrence => repeated, opts => []}]}].
 
 
-get_msg_names() -> ['grpc.health.v1.HealthCheckRequest', 'grpc.health.v1.HealthCheckResponse'].
+get_msg_names() -> ['grpc.health.v1.HealthCheckRequest', 'grpc.health.v1.HealthCheckResponse', 'grpc.health.v1.HealthListRequest', 'grpc.health.v1.HealthListResponse'].
 
 
 get_group_names() -> [].
 
 
-get_msg_or_group_names() -> ['grpc.health.v1.HealthCheckRequest', 'grpc.health.v1.HealthCheckResponse'].
+get_msg_or_group_names() -> ['grpc.health.v1.HealthCheckRequest', 'grpc.health.v1.HealthCheckResponse', 'grpc.health.v1.HealthListRequest', 'grpc.health.v1.HealthListResponse'].
 
 
 get_enum_names() -> ['grpc.health.v1.HealthCheckResponse.ServingStatus'].
@@ -713,10 +1080,12 @@ fetch_enum_def(EnumName) ->
 
 find_msg_def('grpc.health.v1.HealthCheckRequest') -> [#{name => service, fnum => 1, rnum => 2, type => string, occurrence => optional, opts => []}];
 find_msg_def('grpc.health.v1.HealthCheckResponse') -> [#{name => status, fnum => 1, rnum => 2, type => {enum, 'grpc.health.v1.HealthCheckResponse.ServingStatus'}, occurrence => optional, opts => []}];
+find_msg_def('grpc.health.v1.HealthListRequest') -> [];
+find_msg_def('grpc.health.v1.HealthListResponse') -> [#{name => statuses, fnum => 1, rnum => 2, type => {map, string, {msg, 'grpc.health.v1.HealthCheckResponse'}}, occurrence => repeated, opts => []}];
 find_msg_def(_) -> error.
 
 
-find_enum_def('grpc.health.v1.HealthCheckResponse.ServingStatus') -> [{'UNKNOWN', 0}, {'SERVING', 1}, {'NOT_SERVING', 2}];
+find_enum_def('grpc.health.v1.HealthCheckResponse.ServingStatus') -> [{'UNKNOWN', 0}, {'SERVING', 1}, {'NOT_SERVING', 2}, {'SERVICE_UNKNOWN', 3}];
 find_enum_def(_) -> error.
 
 
@@ -728,23 +1097,28 @@ enum_value_by_symbol('grpc.health.v1.HealthCheckResponse.ServingStatus', Sym) ->
 
 'enum_symbol_by_value_grpc.health.v1.HealthCheckResponse.ServingStatus'(0) -> 'UNKNOWN';
 'enum_symbol_by_value_grpc.health.v1.HealthCheckResponse.ServingStatus'(1) -> 'SERVING';
-'enum_symbol_by_value_grpc.health.v1.HealthCheckResponse.ServingStatus'(2) -> 'NOT_SERVING'.
+'enum_symbol_by_value_grpc.health.v1.HealthCheckResponse.ServingStatus'(2) -> 'NOT_SERVING';
+'enum_symbol_by_value_grpc.health.v1.HealthCheckResponse.ServingStatus'(3) -> 'SERVICE_UNKNOWN'.
 
 
 'enum_value_by_symbol_grpc.health.v1.HealthCheckResponse.ServingStatus'('UNKNOWN') -> 0;
 'enum_value_by_symbol_grpc.health.v1.HealthCheckResponse.ServingStatus'('SERVING') -> 1;
-'enum_value_by_symbol_grpc.health.v1.HealthCheckResponse.ServingStatus'('NOT_SERVING') -> 2.
+'enum_value_by_symbol_grpc.health.v1.HealthCheckResponse.ServingStatus'('NOT_SERVING') -> 2;
+'enum_value_by_symbol_grpc.health.v1.HealthCheckResponse.ServingStatus'('SERVICE_UNKNOWN') -> 3.
 
 
 get_service_names() -> ['grpc.health.v1.Health'].
 
 
 get_service_def('grpc.health.v1.Health') ->
-    {{service, 'grpc.health.v1.Health'}, [#{name => 'Check', input => 'grpc.health.v1.HealthCheckRequest', output => 'grpc.health.v1.HealthCheckResponse', input_stream => false, output_stream => false, opts => []}]};
+    {{service, 'grpc.health.v1.Health'},
+     [#{name => 'Check', input => 'grpc.health.v1.HealthCheckRequest', output => 'grpc.health.v1.HealthCheckResponse', input_stream => false, output_stream => false, opts => []},
+      #{name => 'List', input => 'grpc.health.v1.HealthListRequest', output => 'grpc.health.v1.HealthListResponse', input_stream => false, output_stream => false, opts => []},
+      #{name => 'Watch', input => 'grpc.health.v1.HealthCheckRequest', output => 'grpc.health.v1.HealthCheckResponse', input_stream => false, output_stream => true, opts => []}]};
 get_service_def(_) -> error.
 
 
-get_rpc_names('grpc.health.v1.Health') -> ['Check'];
+get_rpc_names('grpc.health.v1.Health') -> ['Check', 'List', 'Watch'];
 get_rpc_names(_) -> error.
 
 
@@ -753,6 +1127,8 @@ find_rpc_def(_, _) -> error.
 
 
 'find_rpc_def_grpc.health.v1.Health'('Check') -> #{name => 'Check', input => 'grpc.health.v1.HealthCheckRequest', output => 'grpc.health.v1.HealthCheckResponse', input_stream => false, output_stream => false, opts => []};
+'find_rpc_def_grpc.health.v1.Health'('List') -> #{name => 'List', input => 'grpc.health.v1.HealthListRequest', output => 'grpc.health.v1.HealthListResponse', input_stream => false, output_stream => false, opts => []};
+'find_rpc_def_grpc.health.v1.Health'('Watch') -> #{name => 'Watch', input => 'grpc.health.v1.HealthCheckRequest', output => 'grpc.health.v1.HealthCheckResponse', input_stream => false, output_stream => true, opts => []};
 'find_rpc_def_grpc.health.v1.Health'(_) -> error.
 
 
@@ -779,6 +1155,8 @@ service_name_to_fqbin(X) -> error({gpb_error, {badservice, X}}).
 %% and an rpc name, both as binaries to a service name and an rpc
 %% name, as atoms.
 fqbins_to_service_and_rpc_name(<<"grpc.health.v1.Health">>, <<"Check">>) -> {'grpc.health.v1.Health', 'Check'};
+fqbins_to_service_and_rpc_name(<<"grpc.health.v1.Health">>, <<"List">>) -> {'grpc.health.v1.Health', 'List'};
+fqbins_to_service_and_rpc_name(<<"grpc.health.v1.Health">>, <<"Watch">>) -> {'grpc.health.v1.Health', 'Watch'};
 fqbins_to_service_and_rpc_name(S, R) -> error({gpb_error, {badservice_or_rpc, {S, R}}}).
 
 
@@ -786,16 +1164,22 @@ fqbins_to_service_and_rpc_name(S, R) -> error({gpb_error, {badservice_or_rpc, {S
 %% to a fully qualified (ie with package name) service name and
 %% an rpc name as binaries.
 service_and_rpc_name_to_fqbins('grpc.health.v1.Health', 'Check') -> {<<"grpc.health.v1.Health">>, <<"Check">>};
+service_and_rpc_name_to_fqbins('grpc.health.v1.Health', 'List') -> {<<"grpc.health.v1.Health">>, <<"List">>};
+service_and_rpc_name_to_fqbins('grpc.health.v1.Health', 'Watch') -> {<<"grpc.health.v1.Health">>, <<"Watch">>};
 service_and_rpc_name_to_fqbins(S, R) -> error({gpb_error, {badservice_or_rpc, {S, R}}}).
 
 
 fqbin_to_msg_name(<<"grpc.health.v1.HealthCheckRequest">>) -> 'grpc.health.v1.HealthCheckRequest';
 fqbin_to_msg_name(<<"grpc.health.v1.HealthCheckResponse">>) -> 'grpc.health.v1.HealthCheckResponse';
+fqbin_to_msg_name(<<"grpc.health.v1.HealthListRequest">>) -> 'grpc.health.v1.HealthListRequest';
+fqbin_to_msg_name(<<"grpc.health.v1.HealthListResponse">>) -> 'grpc.health.v1.HealthListResponse';
 fqbin_to_msg_name(E) -> error({gpb_error, {badmsg, E}}).
 
 
 msg_name_to_fqbin('grpc.health.v1.HealthCheckRequest') -> <<"grpc.health.v1.HealthCheckRequest">>;
 msg_name_to_fqbin('grpc.health.v1.HealthCheckResponse') -> <<"grpc.health.v1.HealthCheckResponse">>;
+msg_name_to_fqbin('grpc.health.v1.HealthListRequest') -> <<"grpc.health.v1.HealthListRequest">>;
+msg_name_to_fqbin('grpc.health.v1.HealthListResponse') -> <<"grpc.health.v1.HealthListResponse">>;
 msg_name_to_fqbin(E) -> error({gpb_error, {badmsg, E}}).
 
 
@@ -834,7 +1218,7 @@ get_all_source_basenames() -> ["health.proto"].
 get_all_proto_names() -> ["health"].
 
 
-get_msg_containment("health") -> ['grpc.health.v1.HealthCheckRequest', 'grpc.health.v1.HealthCheckResponse'];
+get_msg_containment("health") -> ['grpc.health.v1.HealthCheckRequest', 'grpc.health.v1.HealthCheckResponse', 'grpc.health.v1.HealthListRequest', 'grpc.health.v1.HealthListResponse'];
 get_msg_containment(P) -> error({gpb_error, {badproto, P}}).
 
 
@@ -846,7 +1230,7 @@ get_service_containment("health") -> ['grpc.health.v1.Health'];
 get_service_containment(P) -> error({gpb_error, {badproto, P}}).
 
 
-get_rpc_containment("health") -> [{'grpc.health.v1.Health', 'Check'}];
+get_rpc_containment("health") -> [{'grpc.health.v1.Health', 'Check'}, {'grpc.health.v1.Health', 'List'}, {'grpc.health.v1.Health', 'Watch'}];
 get_rpc_containment(P) -> error({gpb_error, {badproto, P}}).
 
 
@@ -854,7 +1238,9 @@ get_enum_containment("health") -> ['grpc.health.v1.HealthCheckResponse.ServingSt
 get_enum_containment(P) -> error({gpb_error, {badproto, P}}).
 
 
+get_proto_by_msg_name_as_fqbin(<<"grpc.health.v1.HealthListRequest">>) -> "health";
 get_proto_by_msg_name_as_fqbin(<<"grpc.health.v1.HealthCheckRequest">>) -> "health";
+get_proto_by_msg_name_as_fqbin(<<"grpc.health.v1.HealthListResponse">>) -> "health";
 get_proto_by_msg_name_as_fqbin(<<"grpc.health.v1.HealthCheckResponse">>) -> "health";
 get_proto_by_msg_name_as_fqbin(E) -> error({gpb_error, {badmsg, E}}).
 
