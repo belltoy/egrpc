@@ -37,6 +37,7 @@ from_grpc_status(Headers) ->
     case Status of
         <<"0">> -> ok;
         <<N:8>> when $0 < N, N =< $9 ->
+            %% TODO: Handle grpc-status-details-bin
             % StatusDetail =
             %     case get_header(?GRPC_HEADER_STATUS_DETAILS_BIN, Headers, <<>>) of
             %         <<>> -> <<>>;
