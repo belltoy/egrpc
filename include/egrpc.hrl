@@ -1,11 +1,7 @@
 -ifndef(EGRPC_HRL).
 -define(EGRPC_HRL, true).
 
--define(DEFAULT_USER_AGENT, <<"grpc-erlang-gung/0.1.0">>).
-% -define(DEFAULT_USER_AGENT(),
-%         iolist_to_binary([<<"foo/">>,
-%                           element(2, application:get_key(
-%                                        element(2, application:get_application(gung)), vsn))])).
+-define(DEFAULT_USER_AGENT, <<"grpc-erlang-egrpc/0.1.0">>).
 
 %% Grpc status code
 -define(GRPC_STATUS_OK,                  0).
