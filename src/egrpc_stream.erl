@@ -236,7 +236,8 @@ recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) 
                 {data, fin, _} ->
                     %% We received a fin, but we still have more data to decode.
                     %% This is unexpected for a gRPC response, so we return an error.
-                    {error, {grpc_error, eos}};
+                    {error, {grpc_error, internal,
+                             <<"Received END_STREAM flag in response data frame">>}};
                 {data, nofin, <<Data/binary>>} ->
                     recv_msg0(Stream, Timeout, <<Buf/binary, Data/binary>>);
                 {error, _} = Error ->
@@ -245,18 +246,6 @@ recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) 
             end
 
     end.
-    % maybe
-    %     %% FIXME: maybe decode more, like trailers?
-    %     more ?= egrpc_grpc:decode(identity, Decoder, Buf),
-    %     {data, nofin, <<Data/binary>>} ?= gun:await(ConnPid, SRef, Timeout),
-    %     recv_msg0(Stream, Timeout, <<Buf/binary, Data/binary>>)
-    % else
-    %     {data, fin, _} ->
-    %         %% GRPC response must have trailers, so we should not get here.
-    %         {error, {grpc_error, eos}};
-    %     Other ->
-    %         Other
-    % end.
 
 -spec recv_response(stream(), timeout()) -> {ok, map()} | {error, any()}.
 recv_response(#stream{} = Stream, Timeout) ->
