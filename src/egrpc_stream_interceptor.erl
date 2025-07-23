@@ -45,7 +45,8 @@
     NextRet :: {ok, Stream, Response, Rest} | {error, any()},
     Next :: fun((Stream, Timeout, Buf) -> NextRet).
 
--callback parse_msg(Stream, Buf, Next, State) -> more | {ok, {Stream, State}, Response, Rest} | {error, any()} when
+-callback parse_msg(Stream, Buf, Next, State) ->
+    more | {ok, {Stream, State}, Response, Rest} | {error, any()} when
     Stream :: egrpc:stream(),
     Buf :: binary(),
     Response :: map(),

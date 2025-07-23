@@ -80,7 +80,6 @@
 
 -spec new(egrpc_stub:channel(), egrpc:grpc()) -> stream().
 new(Channel, #{rpc_def := RpcDef} = Grpc) ->
-    %% TODO: Construct the stream in the code generator
     Codec = egrpc_stub:codec(Channel),
     {Encoder, Decoder} = egrpc_codec:init(Codec, Grpc),
     StreamInterceptors = egrpc_stub:stream_interceptors(Channel),
@@ -189,10 +188,8 @@ recv_streaming_fin(#stream{} = Stream, Timeout) ->
     ConnPid = egrpc_stub:conn_pid(Stream#stream.channel),
     case gun:await(ConnPid, Stream#stream.stream_ref, Timeout) of
         {trailers, Trailers} -> {ok, Trailers};
-        %% TODO: Other cases?
-        % {response, fin, 200, RespHeaders} ->
-        %     {ok, RespHeaders};
-        {error, _} = Error -> Error
+        {error, _} = Error -> Error;
+        _ -> {error, {grpc_error, internal, <<"Unexpected response while waiting for trailers">>}}
     end.
 
 -spec recv_header(stream(), timeout()) -> {ok, stream()} | {error, any()}.
@@ -252,9 +249,8 @@ recv_response(#stream{} = Stream, Timeout) ->
     maybe
         {ok, Stream1} ?= recv_header(Stream, Timeout),
         {ok, Stream2, Resp, <<>>} ?= recv_msg(Stream1, Timeout, <<>>),
-        %% TODO: transform trailers to grpc-status, grpc-message
-        %% Should always be 0 status
-        {ok, _Trailers} ?= recv_streaming_fin(Stream2, Timeout),
+        {ok, Trailers} ?= recv_streaming_fin(Stream2, Timeout),
+        ok ?= egrpc_error:from_grpc_status(Trailers),
         {ok, Resp}
     else
         E -> E

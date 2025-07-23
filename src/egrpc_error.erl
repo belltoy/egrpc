@@ -38,15 +38,6 @@ from_grpc_status(Headers) ->
         <<"0">> -> ok;
         <<N:8>> when $0 < N, N =< $9 ->
             %% TODO: Handle grpc-status-details-bin
-            % StatusDetail =
-            %     case get_header(?GRPC_HEADER_STATUS_DETAILS_BIN, Headers, <<>>) of
-            %         <<>> -> <<>>;
-            %         Detail -> try
-            %                       base64:decode(Detail)
-            %                   catch
-            %                       _:_ -> <<>>
-            %                   end
-            %     end,
             {error, {grpc_error, error_name(N - $0), Message}};
         _ -> {error, {grpc_error, error_name(?GRPC_STATUS_UNKNOWN), Message}}
     end.

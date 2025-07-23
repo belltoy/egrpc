@@ -29,7 +29,6 @@
 ]).
 
 -export_type([
-    value/1,
     conn_opts/0,
     opts/0,
     metadata/0,
@@ -60,8 +59,6 @@
 }).
 
 -type channel() :: #channel{}.
-
--type value(T) :: T.
 
 -type opts() :: #{
     metadata => metadata()
