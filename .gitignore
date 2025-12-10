@@ -20,3 +20,5 @@ rebar3.crashdump
 *~
 rebar.lock
 /config/sys.dev.config
+doc
+.mise.toml
