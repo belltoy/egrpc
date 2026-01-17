@@ -90,8 +90,8 @@ is_behaviour_impl(Module) ->
 
 function_exported(Module, Function, Arity) ->
     try
-        Exportes = Module:module_info(exports),
-        lists:any(fun({F, A}) -> F =:= Function andalso A =:= Arity end, Exportes)
+        Exports = Module:module_info(exports),
+        lists:any(fun({F, A}) -> F =:= Function andalso A =:= Arity end, Exports)
     catch
         _:_ -> false
     end.
