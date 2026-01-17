@@ -1,6 +1,6 @@
 {application, egrpc, [
     {description, "A gRPC client library for Erlang built on top of gun."},
-    {vsn, "0.1.0"},
+    {vsn, "0.1.1"},
     {registered, []},
     {mod, {egrpc_app, []}},
     {applications, [
