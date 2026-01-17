@@ -1,0 +1,11 @@
+words = [
+    "bidi",
+    "egrpc",
+    "eqwalizer",
+    "erlpack",
+    "gpb",
+    "gunzip",
+    "ipath",
+    "nofin",
+]
+ignore_paths = [".codebook.toml"]
