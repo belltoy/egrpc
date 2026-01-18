@@ -1,3 +1,5 @@
+%% @doc This module defines the behaviour for gRPC stream interceptors in egrpc.
+
 -module(egrpc_stream_interceptor).
 
 -export([init/2]).

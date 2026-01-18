@@ -1,3 +1,16 @@
+%% @doc This module implements a gRPC client stub for making RPC calls using egrpc.
+%%
+%% You may not need to use `unary/4', `client_streaming/3', `server_streaming/4' or
+%% `bidi_streaming/3' in this module directly; instead, use the generated client stubs created by
+%% `rebar3_egrpc_plugin' instead.
+%%
+%% If you are implementing your own gRPC client, you can use these functions to make RPC calls,
+%% for example in your generated client stubs.
+%%
+%% For example, `egrpc' provides standard gRPC client for health checking API and
+%% reflection API in `m:egrpc_grpc_health_v1_health_client',
+%% `m:egrpc_grpc_reflection_v1_server_reflection_client' and
+%% `m:egrpc_grpc_reflection_v1alpha_server_reflection_client'.
 -module(egrpc_stub).
 
 -feature(maybe_expr, enable).
@@ -89,6 +102,10 @@
 -type bidi_streaming_ret() :: streaming_ret().
 -type streaming_ret() :: {ok, egrpc:stream()} | {error, any()}.
 
+%% @doc Open a gRPC channel to the given Host and Port with options.
+%%
+%% The `info' option in `Opts' can be used to store arbitrary
+%% information associated with the channel.
 -spec open(Host, Port, conn_opts()) -> {ok, channel()} | {error, any()} when
     Host :: string(),
     Port :: inet:port_number().
@@ -131,6 +148,7 @@ open(Host, Port, Opts0) ->
         E -> E
     end.
 
+%% @doc Await until the channel is up.
 -spec await_up(channel()) -> {ok, channel()} | {error, any()}.
 await_up(#channel{conn_pid = Pid} = Channel) ->
     case gun:await_up(Pid) of
@@ -141,42 +159,58 @@ await_up(#channel{conn_pid = Pid} = Channel) ->
             {error, Reason}
     end.
 
+%% @doc Get the `info' associated with the channel, or return `undefined' if not set.
+%%
+%% Equivalent to `info(Channel, undefined)'.
 -spec info(channel()) -> undefined | any().
 info(#channel{} = Channel) -> info(Channel, undefined).
 
+%% @doc Get the `info' associated with the channel, or return Default if not set.
 -spec info(channel(), Default) -> any() | Default.
 info(#channel{opts = Opts}, Default) ->
     maps:get(info, Opts, Default).
 
+%% @doc Set the `info' associated with the channel.
+-spec set_info(channel(), Info :: any()) -> channel().
 set_info(#channel{opts = Opts} = Channel, Info) ->
     Opts1 = Opts#{info => Info},
     Channel#channel{opts = Opts1}.
 
+%% @doc Get the connection pid from the channel or stream.
 -spec conn_pid(egrpc:stream() | channel()) -> pid().
 conn_pid(#channel{conn_pid = ConnPid}) -> ConnPid;
 conn_pid(Stream) -> conn_pid(egrpc_stream:channel(Stream)).
 
+%% @doc Get the codec module from the channel.
 codec(#channel{codec = Codec}) -> Codec.
 
 stream_interceptors(#channel{stream_interceptors = StreamInterceptors}) -> StreamInterceptors.
 
 unary_interceptors(#channel{unary_interceptors = UnaryInterceptors}) -> UnaryInterceptors.
 
+%% @doc Get the host from the channel.
 -spec host(channel()) -> string().
 host(#channel{host = Host}) -> Host.
 
+%% @doc Get the port from the channel.
 -spec port(channel()) -> inet:port_number().
 port(#channel{port = Port}) -> Port.
 
+%% @doc Close the gRPC channel.
+%% By default, it performs a graceful shutdown.
+%% Equivalent to `close(Channel, false)'.
 -spec close(channel()) -> ok.
 close(Channel) -> close(Channel, false).
 
--spec close(channel(), boolean()) -> ok.
+%% @doc Close the gRPC channel.
+%% If Force is `true', it performs an immediate close.
+-spec close(channel(), Force :: boolean()) -> ok.
 close(#channel{conn_pid = ConnPid}, false) ->
     gun:shutdown(ConnPid);
 close(#channel{conn_pid = ConnPid}, true) ->
     gun:close(ConnPid).
 
+%% @doc Make a unary RPC call.
 -spec unary(channel(), Request, Grpc, Opts) -> unary_ret(Response) when
     Request :: map(),
     Response :: map(),
@@ -185,12 +219,14 @@ close(#channel{conn_pid = ConnPid}, true) ->
 unary(Channel, Request, Grpc, Opts0) ->
     egrpc_stream:unary(egrpc_stream:new(Channel, Grpc), Request, Opts0).
 
+%% @doc Make a client streaming RPC call.
 -spec client_streaming(channel(), Grpc, Opts) -> {ok, egrpc:stream()} | {error, any()} when
     Opts :: opts(),
     Grpc :: egrpc:grpc().
 client_streaming(Channel, Grpc, Opts0) ->
     egrpc_stream:client_streaming(egrpc_stream:new(Channel, Grpc), Opts0).
 
+%% @doc Make a server streaming RPC call.
 -spec server_streaming(channel(), Request, Grpc, Opts) ->
     {ok, egrpc:stream()} | {error, any()} when
     Request :: map(),
@@ -199,6 +235,7 @@ client_streaming(Channel, Grpc, Opts0) ->
 server_streaming(Channel, Request, Grpc, Opts0) ->
     egrpc_stream:server_streaming(egrpc_stream:new(Channel, Grpc), Request, Opts0).
 
+%% @doc Make a bidirectional streaming RPC call.
 -spec bidi_streaming(channel(), Grpc, Opts) -> {ok, egrpc:stream()} | {error, any()} when
     Opts :: opts(),
     Grpc :: egrpc:grpc().

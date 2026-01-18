@@ -1,3 +1,4 @@
+%% @private
 -module(egrpc_sup).
 
 -behaviour(supervisor).

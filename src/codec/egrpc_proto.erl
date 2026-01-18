@@ -1,3 +1,5 @@
+%% @doc This module provides an egrpc codec implementation using Protocol Buffers (Protobuf)
+%% encoding and decoding for gRPC messages.
 -module(egrpc_proto).
 
 -behaviour(egrpc_codec).

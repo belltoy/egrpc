@@ -1,3 +1,6 @@
+%% @doc This module provides an egrpc codec implementation using Erlang's built-in
+%% `erlang:term_to_binary/1' and `erlang:binary_to_term/1' functions for encoding and decoding
+%% messages.
 -module(egrpc_erlpack).
 
 -behaviour(egrpc_codec).

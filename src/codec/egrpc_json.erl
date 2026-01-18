@@ -1,3 +1,5 @@
+%% @doc This module provides an egrpc codec implementation using JSON
+%% encoding and decoding for gRPC messages.
 -module(egrpc_json).
 
 -behaviour(egrpc_codec).
