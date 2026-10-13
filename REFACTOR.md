@@ -314,23 +314,30 @@ hard-coded 5000 ms.
   every call and has the same per-wait meaning.
 - `egrpc_stub:await_up/2` takes a `Timeout`; `await_up/1` is `await_up(Channel, 5000)`.
 
-Cleanup of the stream when a unary call fails, by reading the gun source (see "to verify" below):
+Cleanup of the stream when a unary call fails (`egrpc_stream:recv_unary_response/2`):
 
 | Result | Action |
 |---|---|
 | success | none |
 | gRPC status error (trailers received) | none; gun has already deleted the stream, a `gun:cancel` would only make gun send a `gun_error` (`"The stream cannot be found."`) to the caller |
-| timeout, transport error | `gun:cancel` and `gun:flush(StreamRef)` |
-| error found locally (decode failure, unsupported compression, invalid compressed flag, unexpected frame) | `gun:flush(StreamRef)` only, no `gun:cancel`: the stream is usually already deleted by gun, and what is left is the unread messages in the mailbox |
+| timeout, transport error, error of a hook | `cancel_and_flush`: `gun:cancel`, a synchronous call to the connection, `gun:flush(StreamRef)` |
+| error found locally (decode failure, unsupported compression, invalid compressed flag, unexpected frame) | the same `cancel_and_flush` |
 
-Known limits: `gun:cancel` is asynchronous, so a frame which gun forwarded before it processed the
-cancel can still reach the mailbox after the flush. A server which keeps sending data in a unary call
-is not handled when the error was found locally.
+**The rule changed while it was implemented.** It was decided that an error found locally is only
+flushed, not cancelled. The test `no_leftover_after_decode_failure` showed that this is not enough:
+the trailers of the response are still on their way when the error is found, and they arrive after
+the flush. `gun:cancel/2` is asynchronous, so it is followed by a call to the connection process
+(`gun:stream_info/2`): gun replies after it handled the cancel, and every message of the stream which
+it sent before is in the mailbox when the call returns, the `gun_error` of a cancel of a stream which
+is already finished included. The flush then removes all of them, without a race.
+
+A server which keeps sending data in a unary call after an error is cancelled with the stream.
 
 Local decode errors are reported as `INTERNAL` (the separate fix `fix: report response decode
 failures as INTERNAL`), as the gRPC status code table requires for a client.
 
-**Verified by running** (`test/egrpc_gun_SUITE.erl`, gun 2.x, against the fake server):
+**Verified by running** (`test/egrpc_gun_SUITE.erl` and `test/egrpc_unary_SUITE.erl`, gun 2.x,
+against the fake server):
 
 - `gun:cancel` on a stream which has finished makes gun send
   `{gun_error, Conn, StreamRef, {badstate, "The stream cannot be found."}}` to the caller.
@@ -338,10 +345,9 @@ failures as INTERNAL`), as the gRPC status code table requires for a client.
   afterwards, the late response of the server does not reach the mailbox (observed for 2.5 s).
 - `gun:flush(StreamRef)` removes the unread messages of a stream (the three messages of a complete
   response).
-
-**Not verified:** the race described above, between `cancel` being processed by gun and the frames
-which were already forwarded, and the behaviour after each kind of failure through egrpc itself
-(that is the change of phase 1; the `leftover_*` tests of `egrpc_unary_SUITE` record today's behaviour).
+- Through egrpc, nothing of the stream is left in the mailbox after a status error, a decode
+  failure, an unsupported compression and a timeout (`no_leftover_*`, repeated 6 times without a
+  failure).
 
 ### 4.6 Decided not to do
 
@@ -517,7 +523,7 @@ single module on the new behaviour.
 | `ctx` | Postponed |
 | "Call end" hook | Not done, the streaming receive path is not redesigned |
 | `timeout` | Per-wait semantics unchanged, default 5000 ms, call-level only (no channel default), no `grpc-timeout` header, unary only |
-| Stream cleanup on failure | `cancel` + `flush` on timeout and transport errors; `flush` only on local errors; nothing on status errors. **To be verified strictly by running** (see 4.5) |
+| Stream cleanup on failure | `cancel` + a synchronous call to the connection + `flush` on timeout, transport errors and local errors; nothing on status errors. Verified by running, the decided "flush only on local errors" was not enough (see 4.5) |
 | `await_up` | New `await_up/2` with a `Timeout`; `await_up/1` is `await_up(Channel, 5000)` |
 | Release | One breaking release in the 0.2.x series |
 | Tests | Four layers: eunit; an in-process fake server on cowboy; GripMock (`bavix/gripmock`); optional etcd. The suite does not depend on one particular server, and each external requirement is skipped on its own when missing |

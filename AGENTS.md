@@ -58,10 +58,9 @@ versions:
   with `Dep ranch has invalid version`.
 - `test/egrpc_test_echo_pb.erl` is generated from `test/egrpc_gripmock_SUITE_data/echo.proto`, the
   command is in the header of the suite. It is the only generated file outside `src/` and is committed.
-- The suites named `leftover_*` in `egrpc_unary_SUITE` record what is left in the caller's mailbox
-  today, which [REFACTOR.md](REFACTOR.md) (4.5) changes: flip their assertions together with that
-  change.
-- The test infrastructure is phase 0 of [REFACTOR.md](REFACTOR.md).
+- The tests named `no_leftover_*` in `egrpc_unary_SUITE` check that nothing of a stream is left in the
+  caller's mailbox after a failed unary call ([REFACTOR.md](REFACTOR.md), 4.5). Run them a few times
+  when touching `cancel_and_flush`, the race is what they guard against.
 
 ## Architecture
 
@@ -103,7 +102,9 @@ it, in a `conn` part which derived channels share; the `pipeline` part (intercep
   gpb's `json` option.
 - **A hook can stop a call** by returning `{error, Reason}`, so `egrpc_stream:send_msg/3` and
   `close_send/1` return `{ok, Stream} | {error, Reason}` (they returned a bare stream before).
-- **The unary response timeout is hard-coded** to 5000 ms in `egrpc_stream:unary/3`.
+- **The unary response timeout** is `timeout` in the call options, 5000 ms by default, for each wait
+  for a message (not a deadline, not sent to the server). After a failure other than a status of the
+  server, `egrpc_stream` cancels the stream and flushes the mailbox of the caller (`cancel_and_flush`).
 - **`info` is a per-channel term** of the pipeline, set by `open/3` or `derive/2`, not meant for per-call
   data. There is no `set_info/2`.
 - **A derived channel can not be closed:** `derive/2` returns a channel which shares the connection, and

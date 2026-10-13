@@ -1,7 +1,7 @@
 %% @doc Unary calls of egrpc against the fake server, for what a real server does not do.
 %%
-%% The tests named `leftover_*' record what is left in the mailbox of the caller today. That is
-%% what REFACTOR.md (4.5) changes, so the assertions are to be flipped by the change.
+%% The tests named `no_leftover_*' check that nothing of the stream is left in the mailbox of the
+%% caller after a failed call (REFACTOR.md, 4.5).
 -module(egrpc_unary_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
@@ -19,11 +19,15 @@
     end_stream_on_data/1,
     data_after_message/1,
     connection_closed/1,
-    timeout/1,
-    leftover_after_status/1,
-    leftover_after_decode_failure/1,
-    leftover_after_timeout/1
+    timeout_default/1,
+    timeout_option/1,
+    no_leftover_after_status/1,
+    no_leftover_after_decode_failure/1,
+    no_leftover_after_timeout/1,
+    no_leftover_after_unsupported_compression/1
 ]).
+
+-define(CHECK_TIMEOUT(Ch, Ms), ?CHECK(Ch, #{timeout => Ms})).
 
 -define(CHECK(Ch, Opts), egrpc_grpc_health_v1_health_client:check(Ch, #{service => <<"s">>}, Opts)).
 
@@ -39,10 +43,12 @@ all() ->
         end_stream_on_data,
         data_after_message,
         connection_closed,
-        timeout,
-        leftover_after_status,
-        leftover_after_decode_failure,
-        leftover_after_timeout
+        timeout_default,
+        timeout_option,
+        no_leftover_after_status,
+        no_leftover_after_decode_failure,
+        no_leftover_after_timeout,
+        no_leftover_after_unsupported_compression
     ].
 
 init_per_suite(Config) ->
@@ -172,8 +178,8 @@ connection_closed(_Config) ->
     ?assertMatch({error, _}, ?CHECK(Ch, #{})),
     done(Srv).
 
-%% The timeout is the hard-coded 5000 ms for each wait of the call.
-timeout(_Config) ->
+%% The default is 5000 ms for each wait of the call.
+timeout_default(_Config) ->
     Srv = {_, Ch} = serve([{sleep, 8000}]),
     T0 = erlang:monotonic_time(millisecond),
     ?assertEqual({error, timeout}, ?CHECK(Ch, #{})),
@@ -182,24 +188,44 @@ timeout(_Config) ->
     ?assert(Elapsed < 7000),
     done(Srv).
 
+%% The `timeout' option is the wait for each message.
+timeout_option(_Config) ->
+    Srv = {_, Ch} = serve([{sleep, 3000}]),
+    T0 = erlang:monotonic_time(millisecond),
+    ?assertEqual({error, timeout}, ?CHECK_TIMEOUT(Ch, 300)),
+    Elapsed = erlang:monotonic_time(millisecond) - T0,
+    ?assert(Elapsed >= 250),
+    ?assert(Elapsed < 2000),
+    done(Srv).
+
 %% After a status error everything of the stream was read.
-leftover_after_status(_Config) ->
+no_leftover_after_status(_Config) ->
     Srv = {_, Ch} = serve(egrpc_fake_server:status(5, <<"nope">>)),
     ?assertMatch({error, _}, ?CHECK(Ch, #{})),
     ?assertEqual([], egrpc_test_util:stream_msgs(egrpc_test_util:drain(300))),
     done(Srv).
 
-%% After a decode failure the trailers of the response are left in the mailbox.
-leftover_after_decode_failure(_Config) ->
+%% After a decode failure the unread trailers are flushed.
+no_leftover_after_decode_failure(_Config) ->
     Srv = {_, Ch} = serve(egrpc_fake_server:ok(<<255, 255, 255>>)),
-    ?assertMatch({error, _}, ?CHECK(Ch, #{})),
-    ?assertMatch([{gun_trailers, _, _, _}], egrpc_test_util:stream_msgs(egrpc_test_util:drain(300))),
+    ?assertMatch({error, {grpc_error, internal, _}}, ?CHECK(Ch, #{})),
+    ?assertEqual([], egrpc_test_util:stream_msgs(egrpc_test_util:drain(300))),
     done(Srv).
 
-%% After a timeout the stream is not cancelled, so the late response reaches the mailbox.
-leftover_after_timeout(_Config) ->
-    Srv = {_, Ch} = serve([{sleep, 6000} | egrpc_fake_server:ok(egrpc_test_util:health_response('SERVING'))]),
-    ?assertEqual({error, timeout}, ?CHECK(Ch, #{})),
-    Late = egrpc_test_util:stream_msgs(egrpc_test_util:drain(3000)),
-    ?assertMatch([{gun_response, _, _, _, _, _} | _], Late),
+no_leftover_after_unsupported_compression(_Config) ->
+    Actions = [
+        {headers, [{<<"content-type">>, <<"application/grpc">>}]},
+        {data, <<1, 2:32, "ab">>},
+        {trailers, [{<<"grpc-status">>, <<"0">>}]}
+    ],
+    Srv = {_, Ch} = serve(Actions),
+    ?assertMatch({error, {grpc_error, internal, _}}, ?CHECK(Ch, #{})),
+    ?assertEqual([], egrpc_test_util:stream_msgs(egrpc_test_util:drain(300))),
+    done(Srv).
+
+%% After a timeout the stream is cancelled, the late response does not reach the mailbox.
+no_leftover_after_timeout(_Config) ->
+    Srv = {_, Ch} = serve([{sleep, 1500} | egrpc_fake_server:ok(egrpc_test_util:health_response('SERVING'))]),
+    ?assertEqual({error, timeout}, ?CHECK_TIMEOUT(Ch, 300)),
+    ?assertEqual([], egrpc_test_util:stream_msgs(egrpc_test_util:drain(3000))),
     done(Srv).

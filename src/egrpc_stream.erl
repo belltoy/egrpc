@@ -82,6 +82,9 @@
     fun((stream(), Buf :: binary()) ->
         {ok, stream(), Response :: map(), Rest :: binary()} | more | {error, any()}).
 
+%% The timeout of every wait for a message of a unary call, `timeout' in the call options.
+-define(DEFAULT_TIMEOUT, 5000).
+
 %% The headers of every request, the `content-type' is the one of the codec.
 -define(DEFAULT_HEADERS, #{
     <<"grpc-encoding">> => <<"identity">>,
@@ -141,8 +144,8 @@ unary(#stream{chain = #chain{unary = Wraps}} = Stream0, Request0, Opts0) ->
         fun(#stream{} = Stream1, Req, Opts) ->
             maybe
                 {ok, Stream2} ?= init_req(Stream1, Opts),
-                {ok, Stream3} ?= send_msg(Stream2, Req, fin),
-                recv_response(Stream3, 5000)
+                {ok, Stream3} ?= send_msg_or_cancel(Stream2, Req),
+                recv_unary_response(Stream3, maps:get(timeout, Opts, ?DEFAULT_TIMEOUT))
             end
         end,
     %% The first interceptor is the outermost.
@@ -285,15 +288,92 @@ recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) 
 
 -spec recv_response(stream(), timeout()) -> {ok, map()} | {error, any()}.
 recv_response(#stream{} = Stream, Timeout) ->
-    maybe
-        {ok, Stream1} ?= recv_header(Stream, Timeout),
-        {ok, Stream2, Resp} ?= recv_one_msg(Stream1, Timeout),
-        {ok, Trailers} ?= recv_streaming_fin(Stream2, Timeout),
-        ok ?= egrpc_error:from_grpc_status(Trailers),
-        {ok, Resp}
-    else
-        E -> E
+    case do_recv_response(Stream, Timeout) of
+        {ok, _Resp} = Ok -> Ok;
+        {error, _Kind, Reason} -> {error, Reason}
     end.
+
+%% Where an error of a response comes from, which tells what is left of the stream:
+%% - `status': the server answered with a status, the whole response was read;
+%% - `local': found by egrpc in what it received (a message which does not decode, ...), the rest of
+%%   the response may be unread or still on its way;
+%% - `transport': a timeout or an error of the connection, or of a hook, the stream may be alive.
+-type error_kind() :: status | local | transport.
+
+-spec do_recv_response(stream(), timeout()) -> {ok, map()} | {error, error_kind(), any()}.
+do_recv_response(#stream{} = Stream, Timeout) ->
+    case recv_header(Stream, Timeout) of
+        {ok, Stream1} ->
+            case recv_one_msg(Stream1, Timeout) of
+                {ok, Stream2, Resp} -> recv_trailers(Stream2, Timeout, Resp);
+                {error, Reason} -> {error, error_kind(local, Reason), Reason}
+            end;
+        {error, Reason} ->
+            %% a status of a trailers-only response is a grpc_error, a hook can return anything
+            {error, error_kind(status, Reason), Reason}
+    end.
+
+recv_trailers(Stream, Timeout, Resp) ->
+    case recv_streaming_fin(Stream, Timeout) of
+        {ok, Trailers} ->
+            case egrpc_error:from_grpc_status(Trailers) of
+                ok -> {ok, Resp};
+                {error, Reason} -> {error, status, Reason}
+            end;
+        {error, Reason} ->
+            {error, error_kind(local, Reason), Reason}
+    end.
+
+%% A `grpc_error' is what egrpc itself or the server reported, the others (`timeout', the errors
+%% of gun, of a hook) are from the transport.
+error_kind(Kind, {grpc_error, _Name, _Message}) -> Kind;
+error_kind(_Kind, _Reason) -> transport.
+
+%% Receive the response of a unary call and clean up what is left of the stream when it failed:
+%% - success or a status of the server: nothing, gun deleted the stream and the response was read,
+%%   `gun:cancel/2' would make gun send a `gun_error' for a stream which it does not know;
+%% - any other error: cancel the stream and flush the mailbox, see `cancel_and_flush/1'.
+recv_unary_response(#stream{} = Stream, Timeout) ->
+    case do_recv_response(Stream, Timeout) of
+        {ok, _Resp} = Ok ->
+            Ok;
+        {error, status, Reason} ->
+            {error, Reason};
+        {error, _Local_or_transport, Reason} ->
+            cancel_and_flush(Stream),
+            {error, Reason}
+    end.
+
+%% A hook which fails the send when the request was already started.
+send_msg_or_cancel(#stream{} = Stream, Req) ->
+    case send_msg(Stream, Req, fin) of
+        {ok, _} = Ok ->
+            Ok;
+        {error, _} = Error ->
+            cancel_and_flush(Stream),
+            Error
+    end.
+
+%% After this nothing of the stream is left in the mailbox of the caller, and a late response does
+%% not reach it.
+%%
+%% Flushing only is not enough: the rest of the response (the trailers) may still be on its way
+%% and arrives after the flush. `gun:cancel/2' is asynchronous, so it is followed by a call to the
+%% connection process, which replies after it handled the cancel, and every message of the stream
+%% it sent before is in the mailbox when the call returns. If the stream is already finished gun
+%% sends a `gun_error' for the cancel, which the flush removes as well.
+cancel_and_flush(#stream{stream_ref = undefined}) ->
+    ok;
+cancel_and_flush(#stream{stream_ref = SRef} = Stream) ->
+    ConnPid = egrpc_stub:conn_pid(Stream#stream.channel),
+    ok = gun:cancel(ConnPid, SRef),
+    try
+        gun:stream_info(ConnPid, SRef)
+    catch
+        %% the connection is gone, nothing more will be sent
+        exit:_ -> ok
+    end,
+    ok = gun:flush(SRef).
 
 %% A unary response is one message, more data in the buffer is a protocol violation.
 recv_one_msg(#stream{} = Stream, Timeout) ->

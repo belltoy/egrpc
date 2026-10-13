@@ -9,7 +9,9 @@
     derive_shares_the_connection/1,
     derive_pipeline_is_independent/1,
     derived_channel_can_not_close/1,
-    original_closes_the_connection/1
+    original_closes_the_connection/1,
+    await_up_with_a_timeout/1,
+    await_up_of_a_closed_port/1
 ]).
 
 -define(CHECK(Ch), egrpc_grpc_health_v1_health_client:check(Ch, #{service => <<"s">>})).
@@ -19,7 +21,9 @@ all() ->
         derive_shares_the_connection,
         derive_pipeline_is_independent,
         derived_channel_can_not_close,
-        original_closes_the_connection
+        original_closes_the_connection,
+        await_up_with_a_timeout,
+        await_up_of_a_closed_port
     ].
 
 init_per_suite(Config) ->
@@ -105,3 +109,20 @@ original_closes_the_connection(Config) ->
         {'DOWN', MRef, process, Pid, _} -> ok
     after 2000 -> ct:fail(connection_still_up)
     end.
+
+await_up_with_a_timeout(Config) ->
+    Port = egrpc_fake_server:port(?config(server, Config)),
+    {ok, Ch} = egrpc_stub:open("localhost", Port, #{}),
+    try
+        ?assertMatch({ok, _}, egrpc_stub:await_up(Ch, 2000))
+    after
+        egrpc_stub:close(Ch, true)
+    end.
+
+%% The connection is refused, the channel is not up.
+await_up_of_a_closed_port(Config) ->
+    Ref = ?config(server, Config),
+    Port = egrpc_fake_server:port(Ref),
+    ok = egrpc_fake_server:stop(Ref),
+    {ok, Ch} = egrpc_stub:open("localhost", Port, #{}),
+    ?assertMatch({error, _}, egrpc_stub:await_up(Ch, 2000)).

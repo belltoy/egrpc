@@ -31,6 +31,7 @@
     open/3,
     derive/2,
     await_up/1,
+    await_up/2,
     close/1,
     close/2
 ]).
@@ -91,7 +92,11 @@
 -type channel() :: #channel{}.
 
 -type opts() :: #{
-    metadata => metadata()
+    metadata => metadata(),
+    %% How long to wait for each message of the response of a unary call, in milliseconds, 5000
+    %% by default. It is not a deadline of the whole call and it is not sent to the server. The
+    %% streaming calls take the timeout of every receive as an argument.
+    timeout => timeout()
 }.
 
 -type metadata() :: #{binary() => binary()}.
@@ -232,10 +237,17 @@ check_removed_opts(Opts) ->
         [Key | _] -> error({removed_option, Key})
     end.
 
-%% @doc Await until the channel is up.
+%% @doc Await until the channel is up, for at most 5000 ms.
+%%
+%% Equivalent to `await_up(Channel, 5000)'.
 -spec await_up(channel()) -> {ok, channel()} | {error, any()}.
-await_up(#channel{conn = #conn{conn_pid = Pid}} = Channel) ->
-    case gun:await_up(Pid) of
+await_up(#channel{} = Channel) ->
+    await_up(Channel, 5000).
+
+%% @doc Await until the channel is up, for at most `Timeout' ms.
+-spec await_up(channel(), timeout()) -> {ok, channel()} | {error, any()}.
+await_up(#channel{conn = #conn{conn_pid = Pid}} = Channel, Timeout) ->
+    case gun:await_up(Pid, Timeout) of
         {ok, http2} ->
             {ok, Channel};
         {error, Reason} ->
