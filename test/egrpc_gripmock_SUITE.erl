@@ -24,6 +24,7 @@
     unary/1,
     unary_status_error/1,
     unary_metadata/1,
+    call_credentials/1,
     unary_delay/1,
     server_streaming/1,
     client_streaming/1,
@@ -39,6 +40,7 @@ all() ->
         unary,
         unary_status_error,
         unary_metadata,
+        call_credentials,
         unary_delay,
         server_streaming,
         client_streaming,
@@ -104,6 +106,21 @@ unary_metadata(Config) ->
         unary_call(Config, <<"hdr">>, #{metadata => #{<<"x-token">> => <<"abc">>}})
     ),
     ?assertMatch({error, {grpc_error, _, _}}, unary_call(Config, <<"hdr">>, #{})).
+
+%% The credentials of the channel reach the server as request metadata.
+call_credentials(Config) ->
+    stub(Config, #{
+        service => ?SERVICE, method => <<"Unary">>,
+        headers => #{equals => #{<<"x-token">> => <<"abc">>}},
+        input => #{equals => #{message => <<"cred">>}},
+        output => #{data => #{message => <<"authorized">>}}
+    }),
+    Cred = fun(_Stream) -> {ok, #{<<"x-token">> => <<"abc">>}} end,
+    Channel = egrpc_stub:derive(?config(channel, Config), #{call_credentials => Cred}),
+    ?assertEqual(
+        {ok, #{message => <<"authorized">>}},
+        egrpc_stub:unary(Channel, #{message => <<"cred">>}, grpc(<<"Unary">>), #{})
+    ).
 
 unary_delay(Config) ->
     stub(Config, #{

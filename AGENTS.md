@@ -93,6 +93,10 @@ it, in a `conn` part which derived channels share; the `pipeline` part (intercep
   outermost. The `unary/5` wraps are outside all the hooks, and the hooks fire for unary calls too.
   The state is by position. `unary_interceptors` and `stream_interceptors` are removed, `open/3`
   raises `error({removed_option, Key})` for them. All of it runs in the caller process.
+- **`call_credentials`** is a `fun((Stream) -> {ok, Metadata} | {error, Reason})` of `open/3` and
+  `derive/2`, called in `init_req0` before every call is sent (once for a stream). The metadata of
+  the call takes precedence, `{error, Reason}` gives `{error, {call_credentials, Reason}}` without
+  sending, an exception of the callback is not caught.
 - **A hook can stop a call** by returning `{error, Reason}`, so `egrpc_stream:send_msg/3` and
   `close_send/1` return `{ok, Stream} | {error, Reason}` (they returned a bare stream before).
 - **The unary response timeout is hard-coded** to 5000 ms in `egrpc_stream:unary/3`.

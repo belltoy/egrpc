@@ -23,7 +23,8 @@
     port/1,
     codec/1,
     interceptor_chain/1,
-    interceptor_states/1
+    interceptor_states/1,
+    call_credentials/1
 ]).
 
 -export([
@@ -44,6 +45,7 @@
 -export_type([
     conn_opts/0,
     pipeline_opts/0,
+    call_credentials/0,
     opts/0,
     metadata/0,
     channel/0,
@@ -73,6 +75,7 @@
     states = #{} :: egrpc_interceptor:states(),
     %% The hooks of the interceptors, composed when the pipeline is built.
     chain :: egrpc_stream:chain(),
+    call_credentials :: undefined | call_credentials(),
     info :: term()
 }).
 
@@ -96,18 +99,26 @@
 -type conn_opts() :: #{
     gun_opts => gun:opts(),
     interceptors => [egrpc_interceptor:spec()],
+    call_credentials => call_credentials() | undefined,
     retry => non_neg_integer(),
     info => term()
 }.
+
+%% Called before every call is sent, in the process which makes the call. The metadata it returns
+%% is added to the request headers, the `metadata' of the call options take precedence. For a
+%% streaming call it is called when the stream is opened.
+-type call_credentials() ::
+    fun((egrpc:stream()) -> {ok, #{binary() => binary()}} | {error, term()}).
 
 %% The options of `open/3' which `derive/2' accepts: the ones of the pipeline, not of the
 %% connection.
 -type pipeline_opts() :: #{
     interceptors => [egrpc_interceptor:spec()],
+    call_credentials => call_credentials() | undefined,
     info => term()
 }.
 
--define(PIPELINE_OPTS, [interceptors, info]).
+-define(PIPELINE_OPTS, [interceptors, call_credentials, info]).
 %% The options of 0.1.x which were replaced by `interceptors'.
 -define(REMOVED_OPTS, [unary_interceptors, stream_interceptors]).
 
@@ -166,7 +177,8 @@ open(Host, Port, Opts0) ->
 %% explicit, for example `interceptors => []'.
 %%
 %% No connection is opened. The interceptors of `Opts' are initialized for the derived channel,
-%% their state is independent of the original.
+%% their state is independent of the original. `call_credentials => undefined' clears the
+%% credentials.
 %%
 %% An option which is not an option of the pipeline, such as `gun_opts' or `retry', raises
 %% `error({invalid_option, Key})'. The options `unary_interceptors' and `stream_interceptors' of
@@ -197,6 +209,12 @@ set_pipeline_opt(interceptors, Specs, Pipeline) ->
         states = States,
         chain = egrpc_stream:build_chain(Items)
     };
+set_pipeline_opt(call_credentials, undefined, Pipeline) ->
+    Pipeline#pipeline{call_credentials = undefined};
+set_pipeline_opt(call_credentials, Fun, Pipeline) when is_function(Fun, 1) ->
+    Pipeline#pipeline{call_credentials = Fun};
+set_pipeline_opt(call_credentials, Other, _Pipeline) ->
+    error({invalid_call_credentials, Other});
 set_pipeline_opt(info, Info, Pipeline) ->
     Pipeline#pipeline{info = Info}.
 
@@ -241,6 +259,10 @@ interceptor_chain(#channel{pipeline = #pipeline{chain = Chain}}) -> Chain.
 
 %% @private
 interceptor_states(#channel{pipeline = #pipeline{states = States}}) -> States.
+
+%% @private
+-spec call_credentials(channel()) -> undefined | call_credentials().
+call_credentials(#channel{pipeline = #pipeline{call_credentials = Fun}}) -> Fun.
 
 %% @doc Get the host from the channel.
 -spec host(channel()) -> string().
@@ -341,7 +363,19 @@ derive_invalid_option_test() ->
     ?assertError({removed_option, unary_interceptors}, derive(Ch, #{unary_interceptors => []})),
     ?assertError({removed_option, stream_interceptors}, derive(Ch, #{stream_interceptors => []})),
     ?assertError({invalid_interceptor, 42}, derive(Ch, #{interceptors => [42]})),
-    ?assertError({invalid_interceptors, foo}, derive(Ch, #{interceptors => foo})).
+    ?assertError({invalid_interceptors, foo}, derive(Ch, #{interceptors => foo})),
+    ?assertError({invalid_call_credentials, foo}, derive(Ch, #{call_credentials => foo})),
+    ?assertError({invalid_call_credentials, _}, derive(Ch, #{call_credentials => fun() -> ok end})).
+
+derive_call_credentials_test() ->
+    Ch = test_channel(),
+    Cred = fun(_Stream) -> {ok, #{}} end,
+    ?assertEqual(undefined, call_credentials(Ch)),
+    D = derive(Ch, #{call_credentials => Cred}),
+    ?assertEqual(Cred, call_credentials(D)),
+    %% kept when absent, cleared explicitly
+    ?assertEqual(Cred, call_credentials(derive(D, #{info => x}))),
+    ?assertEqual(undefined, call_credentials(derive(D, #{call_credentials => undefined}))).
 
 open_removed_option_test() ->
     ?assertError({removed_option, unary_interceptors}, open("h", 1, #{unary_interceptors => []})),

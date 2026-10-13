@@ -171,15 +171,35 @@ init_req(#stream{chain = #chain{init_req = F}} = Stream, Opts) ->
     F(Stream, Opts).
 
 init_req0(#stream{channel = Channel, grpc = #{path := Path}} = Stream, Opts) ->
-    ConnPid = egrpc_stub:conn_pid(Channel),
-    OptsMetadata0 = maps:get(metadata, Opts, #{}),
-    CustomMetadata0 = maps:filter(
-        fun(Key, _Value) -> string:prefix(Key, "grpc-") =:= nomatch end,
-        OptsMetadata0
-    ),
-    Headers = maps:merge(CustomMetadata0, ?DEFAULT_HEADERS),
-    SRef = gun:post(ConnPid, Path, Headers),
-    {ok, Stream#stream{stream_ref = SRef}}.
+    case call_credentials(Stream) of
+        {ok, CredsMetadata} ->
+            ConnPid = egrpc_stub:conn_pid(Channel),
+            %% The metadata of the call takes precedence over the one of the credentials.
+            Metadata = maps:merge(CredsMetadata, maps:get(metadata, Opts, #{})),
+            CustomMetadata = maps:filter(
+                fun(Key, _Value) -> string:prefix(Key, "grpc-") =:= nomatch end,
+                Metadata
+            ),
+            Headers = maps:merge(CustomMetadata, ?DEFAULT_HEADERS),
+            SRef = gun:post(ConnPid, Path, Headers),
+            {ok, Stream#stream{stream_ref = SRef}};
+        {error, Reason} ->
+            {error, {call_credentials, Reason}}
+    end.
+
+%% The credentials of the channel for this call. An exception of the callback is not caught, it is
+%% a bug of the callback.
+call_credentials(#stream{channel = Channel} = Stream) ->
+    case egrpc_stub:call_credentials(Channel) of
+        undefined ->
+            {ok, #{}};
+        Fun ->
+            case Fun(Stream) of
+                {ok, Metadata} when is_map(Metadata) -> {ok, Metadata};
+                {error, _} = Error -> Error;
+                Other -> error({invalid_call_credentials, Other})
+            end
+    end.
 
 -spec send_msg(stream(), map(), fin | nofin) -> {ok, stream()} | {error, any()}.
 send_msg(#stream{chain = #chain{send_msg = F}} = Stream, Request, IsFin) ->
