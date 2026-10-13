@@ -89,4 +89,22 @@ from_grpc_status_test() ->
     ?assertEqual({error, {grpc_error, unknown, <<"m">>}}, Err(<<"-1">>)),
     ?assertEqual({error, {grpc_error, unknown, <<"m">>}}, Err(<<"abc">>)),
     ok.
+
+%% Every status of the gRPC status code table maps to its name, the message is optional.
+status_names_test() ->
+    Names = [
+        canceled, unknown, invalid_argument, deadline_exceeded, not_found, already_exists,
+        permission_denied, resource_exhausted, failed_precondition, aborted, out_of_range,
+        unimplemented, internal, unavailable, data_loss, unauthenticated
+    ],
+    lists:foreach(
+        fun({Status, Name}) ->
+            Headers = [{?GRPC_HEADER_STATUS, integer_to_binary(Status)}],
+            ?assertEqual({error, {grpc_error, Name, <<>>}}, from_grpc_status(Headers))
+        end,
+        lists:zip(lists:seq(1, 16), Names)
+    ),
+    %% The message is ignored when the status is OK.
+    ?assertEqual(ok, from_grpc_status([{?GRPC_HEADER_STATUS, <<"0">>},
+                                       {?GRPC_HEADER_MESSAGE, <<"ignored">>}])).
 -endif.

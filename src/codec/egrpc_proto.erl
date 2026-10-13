@@ -12,3 +12,16 @@ init(#{pb_module := PbModule, rpc_def := RpcDef}) ->
     Encoder = fun(RequestMsg) -> PbModule:encode_msg(RequestMsg, Input) end,
     Decoder = fun(ResponseBin) -> PbModule:decode_msg(ResponseBin, Output) end,
     {Encoder, Decoder}.
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+roundtrip_test() ->
+    Msg = 'grpc.health.v1.HealthCheckRequest',
+    {Encoder, Decoder} = init(#{pb_module => egrpc_health_pb, rpc_def => #{input => Msg, output => Msg}}),
+    Bin = Encoder(#{service => <<"abc">>}),
+    ?assert(is_binary(Bin)),
+    ?assertEqual(#{service => <<"abc">>}, Decoder(Bin)),
+    %% A message which does not parse raises, the framing turns it into an error.
+    ?assertError(_, Decoder(<<255, 255, 255>>)).
+-endif.

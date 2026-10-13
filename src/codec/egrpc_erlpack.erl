@@ -12,3 +12,13 @@ init(_) ->
     Encoder = fun(Msg) -> erlang:term_to_binary(Msg) end,
     Decoder = fun(Bin) -> erlang:binary_to_term(Bin) end,
     {Encoder, Decoder}.
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+roundtrip_test() ->
+    {Encoder, Decoder} = init(undefined),
+    Term = #{a => 1, b => [<<"x">>, {y, 2}]},
+    ?assertEqual(Term, Decoder(Encoder(Term))),
+    ?assertError(badarg, Decoder(<<"not a term">>)).
+-endif.

@@ -73,4 +73,41 @@ decode_test() ->
     Gz = zlib:gzip(<<"ab">>),
     ?assertEqual({ok, <<"ab">>, <<>>},
                  decode(gzip, Decoder, <<1, (byte_size(Gz)):32, Gz/binary>>)).
+
+encode_test() ->
+    ?assertEqual(<<0, 3:32, "abc">>, encode(identity, <<"abc">>)),
+    ?assertEqual(<<0, 0:32>>, encode(identity, <<>>)),
+    Gz = encode(gzip, <<"abc">>),
+    ?assertMatch(<<1, _:32, _/binary>>, Gz),
+    ?assertThrow({error, {unknown_encoding, deflate}}, encode(deflate, <<"abc">>)).
+
+roundtrip_test() ->
+    Id = fun(Bin) -> Bin end,
+    lists:foreach(
+        fun(Encoding) ->
+            Msg = crypto:strong_rand_bytes(300),
+            ?assertEqual({ok, Msg, <<>>}, decode(Encoding, Id, encode(Encoding, Msg)))
+        end,
+        [identity, gzip]
+    ).
+
+%% Two messages in one buffer are returned one by one with the rest.
+decode_rest_test() ->
+    Id = fun(Bin) -> Bin end,
+    Buf = <<(encode(identity, <<"one">>))/binary, (encode(identity, <<"two">>))/binary>>,
+    {ok, <<"one">>, Rest} = decode(identity, Id, Buf),
+    ?assertEqual({ok, <<"two">>, <<>>}, decode(identity, Id, Rest)).
+
+%% A frame which is cut at any position needs more data, and is complete when it is whole.
+decode_split_test() ->
+    Id = fun(Bin) -> Bin end,
+    Frame = encode(identity, <<"hello">>),
+    lists:foreach(
+        fun(N) ->
+            <<Part:N/binary, _/binary>> = Frame,
+            ?assertEqual(more, decode(identity, Id, Part))
+        end,
+        lists:seq(0, byte_size(Frame) - 1)
+    ),
+    ?assertEqual({ok, <<"hello">>, <<>>}, decode(identity, Id, Frame)).
 -endif.
