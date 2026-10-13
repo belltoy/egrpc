@@ -10,6 +10,9 @@ A gRPC client library for Erlang/OTP built on top of [gun](https://github.com/ni
     - Protocol Buffers codec
     - JSON codec
     - Erlpack codec
+- Interceptors for unary and streaming calls
+- Credentials for every call
+- Channels which share a connection and have different interceptors
 - Standard gRPC API clients
     - Health v1 API
     - Reflection v1 API
@@ -90,6 +93,80 @@ egrpc_stub:close(Channel1).
 ```
 
 You can find more usages in [`etcdgun`](https://hex.pm/packages/etcdgun).
+
+## Channels
+
+A channel is a plain value owned by the process which opened it, not a process. The process which
+calls `egrpc_stub:open/3` is the owner of the `gun` connection: the connection is closed when that
+process exits, and `gun_up`/`gun_down` are sent to it. Keep the channel which `open/3` returned, it
+is the only one which can close the connection.
+
+`egrpc_stub:derive/2` returns a channel on the same connection with a different pipeline
+(`interceptors`, `call_credentials`, `info`). It opens no connection, and `egrpc_stub:close/1,2` on
+the derived channel raises `not_closable`:
+
+```erlang
+%% The same connection, without the interceptors of Channel.
+Bare = egrpc_stub:derive(Channel, #{interceptors => []}),
+%% A key which is absent keeps the setting of Channel.
+WithInfo = egrpc_stub:derive(Channel, #{info => #{user => <<"alice">>}}).
+```
+
+## Interceptors
+
+`interceptors` of `egrpc_stub:open/3` and `egrpc_stub:derive/2` is a list of modules which
+implement the `egrpc_interceptor` behaviour, `{Module, InitOpts}`, or `fun/4`. The first one is the
+outermost. They run in the process which makes the call.
+
+```erlang
+%% A fun is a stateless wrap of unary calls.
+Log = fun(Stream, Request, Opts, Next) ->
+    logger:info("calling ~p", [egrpc_stream:grpc_method(Stream)]),
+    Next(Stream, Request, Opts)
+end,
+{ok, Channel} = egrpc_stub:open(Host, Port, #{interceptors => [Log, {my_interceptor, #{}}]}).
+```
+
+A module can wrap a unary call with `unary/5`, which can change the request or call `Next` again to
+retry, and implement the hooks of the phases of a call (`init_req/4`, `send_msg/5`, `recv_header/4`,
+`recv_msg/5`, `close_send/3` and `parse_msg/4`), which fire for unary calls too. A hook which
+returns `{error, Reason}` stops the call. See the documentation of `egrpc_interceptor`.
+
+## Credentials
+
+`call_credentials` is a function which is called before every call is sent, and returns the
+metadata to add to the request, for example a token. The metadata of the call options takes
+precedence.
+
+```erlang
+Credentials = fun(_Stream) ->
+    case persistent_term:get(my_token, undefined) of
+        undefined -> {error, no_token};
+        Token -> {ok, #{<<"token">> => Token}}
+    end
+end,
+Authenticated = egrpc_stub:derive(Channel, #{call_credentials => Credentials}).
+```
+
+The function should be fast. Refreshing the token is up to the application, for example in an
+interceptor which calls `Next` again after an `unauthenticated` error: the function is called
+again.
+
+## Timeouts
+
+`timeout` in the options of a call is how long a unary call waits for each message of the response,
+5000 ms by default. It is not a deadline for the whole call and the server is not told about it. The
+functions which receive on a streaming call take a timeout as an argument.
+
+```erlang
+Result = my_grpc_api:method(Channel1, Request, #{timeout => 10000}).
+```
+
+## Codecs
+
+`codec` of `egrpc_stub:open/3` is the module which encodes the messages and gives the content type
+of the requests: `egrpc_proto` (default), `egrpc_json` or `egrpc_erlpack`, or your own module which
+implements `egrpc_codec`.
 
 ## License
 

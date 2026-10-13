@@ -1,8 +1,7 @@
 # egrpc refactoring plan
 
-Status: the design below was agreed in discussion, nothing is implemented yet. Section 8 lists the
-decisions; there are no open questions at the moment. Phase 0 (tests) is done for the layers 1 to 3,
-see "Phase 0 status"; the premises of the stream cleanup rules of 4.5 were verified by running.
+Status: implemented on the branch `refactor`, see "Phase 0 status" and "Phase 1 status". Section 8
+lists the decisions; there are no open questions. What is not done is listed in "Phase 1 status".
 
 This is a **breaking change**. Backward compatibility with 0.1.x is explicitly not a goal: old options
 are removed, not deprecated.
@@ -467,6 +466,32 @@ What running them showed:
 - **Timeout:** `timeout` in `Opts` is used for every wait of a unary call; after a timeout or a
   transport error the stream is cancelled and the mailbox has no message of it; after a local error
   the mailbox has no message of it; after a status error nothing is sent to gun.
+
+### Phase 1 status
+
+Steps 1 to 7 of the order above are implemented, each in its own commits, with tests: 21 eunit tests
+and 39 Common Test cases, line coverage 92% (`rebar3 do eunit, ct, covertool generate`). The
+acceptance conditions above are covered by `egrpc_stub_SUITE` and the inline tests of `egrpc_stub`
+(`derive/2`), `egrpc_interceptor_SUITE` (interceptors), `egrpc_call_credentials_SUITE`,
+`egrpc_codec_SUITE`, and `egrpc_unary_SUITE` (timeout and the cleanup).
+
+Where the implementation differs from the text of the plan:
+
+- The cleanup of a failed call: `cancel` + a call to the connection + `flush` for local errors too,
+  see 4.5.
+- `egrpc_stream:send_msg/3` and `close_send/1` return `{ok, Stream} | {error, Reason}`, because a
+  hook can fail. `egrpc_stream_interceptor` is replaced by `egrpc_interceptor`, whose `load/1`
+  validates and initializes the list (used by `egrpc_stub`).
+- `derive/2` raises `error({removed_option, Key})` for the removed options, as `open/3` does.
+- The README describes channels, interceptors, credentials, timeouts and codecs.
+
+Not done, on purpose or left for later:
+
+- The layer 4 of the tests (etcd). `etcdgun` has to be migrated to the new API (section 7).
+- The candidates of 4.6 and the `user-agent` header.
+- Releasing 0.2.0 and the version of `src/egrpc.app.src` (the maintainer).
+- The race between `gun` forwarding a frame and `cancel` is closed by the synchronous call in
+  `cancel_and_flush`; streaming calls are not cleaned up at all (egrpc does not observe their end).
 
 ## 6. Risks
 

@@ -192,7 +192,9 @@ init_req0(#stream{channel = Channel, grpc = #{path := Path}} = Stream, Opts) ->
     end.
 
 %% The credentials of the channel for this call. An exception of the callback is not caught, it is
-%% a bug of the callback.
+%% a bug of the callback. The callback is given by the user, so its return value is checked even
+%% though its type says what it returns.
+-dialyzer({no_match, call_credentials/1}).
 call_credentials(#stream{channel = Channel} = Stream) ->
     case egrpc_stub:call_credentials(Channel) of
         undefined ->
@@ -410,7 +412,7 @@ cancel_stream(#stream{} = _Stream) ->
 %% @doc Compose the hooks of the interceptors, which came from `egrpc_interceptor:load/1'.
 -spec build_chain([egrpc_interceptor:item()]) -> chain().
 build_chain(Items) ->
-    Indexed = lists:zip(lists:seq(1, length(Items)), Items),
+    Indexed = lists:enumerate(Items),
     Modules = [{Idx, M} || {Idx, {module, M}} <- Indexed],
     Impl = fun(Function, Arity) ->
         [{Idx, M} || {Idx, M} <- Modules, egrpc_interceptor:is_impl(M, Function, Arity)]
