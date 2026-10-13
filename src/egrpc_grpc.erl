@@ -26,8 +26,8 @@ decode(_Encoding, Decoder, <<0, Length:32, Bin:Length/binary, Rest/binary>>) ->
     try
         {ok, Decoder(Bin), Rest}
     catch
-        _:Reason ->
-            {error, Reason}
+        _:_Reason ->
+            {error, {grpc_error, internal, <<"Error parsing response proto">>}}
     end;
 decode(_Encoding, _Decoder, <<0, _Length:32, _Binary/binary>>) -> more;
 decode(gzip, Decoder, <<1, Length:32, Compressed:Length/binary, Rest/binary>>) ->
@@ -42,9 +42,35 @@ decode(gzip, Decoder, <<1, Length:32, Compressed:Length/binary, Rest/binary>>) -
             {error, {grpc_error, internal, <<"Error parsing response proto">>}}
     end;
 decode(Encoding, _Decoder, <<1, Length:32, _Compressed:Length/binary, _Rest/binary>>) ->
-    {error, {grpc_error, unimplemented,
+    %% A client reports an unsupported compression of a received message as INTERNAL, UNIMPLEMENTED
+    %% is for the server side.
+    {error, {grpc_error, internal,
                  <<"Compression mechanism ", (atom_to_binary(Encoding, utf8))/binary,
                    " used for received frame not supported">>
             }};
+decode(_Encoding, _Decoder, <<Flag, _/binary>>) when Flag =/= 0, Flag =/= 1 ->
+    {error, {grpc_error, internal,
+                 <<"Invalid Compressed-Flag: ", (integer_to_binary(Flag))/binary>>}};
 decode(_Encoding, _Decoder, <<_/binary>>) ->
     more.
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+decode_test() ->
+    Decoder = fun(<<"bad">>) -> error(badarg); (Bin) -> Bin end,
+    Internal = fun(Msg) -> {error, {grpc_error, internal, Msg}} end,
+    ?assertEqual({ok, <<"ab">>, <<"rest">>}, decode(identity, Decoder, <<0, 2:32, "ab", "rest">>)),
+    ?assertEqual(Internal(<<"Error parsing response proto">>),
+                 decode(identity, Decoder, <<0, 3:32, "bad">>)),
+    %% an incomplete frame needs more data
+    ?assertEqual(more, decode(identity, Decoder, <<0, 5:32, "ab">>)),
+    ?assertEqual(more, decode(identity, Decoder, <<>>)),
+    %% compressed frame but the encoding is not supported
+    ?assertMatch({error, {grpc_error, internal, _}}, decode(identity, Decoder, <<1, 2:32, "ab">>)),
+    %% neither 0 nor 1
+    ?assertEqual(Internal(<<"Invalid Compressed-Flag: 2">>), decode(identity, Decoder, <<2, 0:32>>)),
+    Gz = zlib:gzip(<<"ab">>),
+    ?assertEqual({ok, <<"ab">>, <<>>},
+                 decode(gzip, Decoder, <<1, (byte_size(Gz)):32, Gz/binary>>)).
+-endif.
