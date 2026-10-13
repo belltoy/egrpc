@@ -237,6 +237,11 @@ recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) 
                              <<"Received END_STREAM flag in response data frame">>}};
                 {data, nofin, <<Data/binary>>} ->
                     recv_msg0(Stream, Timeout, <<Buf/binary, Data/binary>>);
+                %% NOTE: there is no `{trailers, _}' clause here. By reading the code (not verified
+                %% by running), when a streaming response ends normally `gun:await/3' returns
+                %% `{trailers, Trailers}', which would raise `case_clause'. Streaming callers
+                %% seem to be expected to drive `gun:await' themselves and use `parse_msg/2'.
+                %% This also means egrpc never observes the end of a streaming call.
                 {error, _} = Error ->
                     %% Error receiving data, return the error.
                     Error
@@ -248,6 +253,10 @@ recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) 
 recv_response(#stream{} = Stream, Timeout) ->
     maybe
         {ok, Stream1} ?= recv_header(Stream, Timeout),
+        %% NOTE: when `Rest' is not `<<>>', the pattern does not match and, through the `else'
+        %% clause below, `{ok, Stream, Resp, Rest}' is returned as the result of the call,
+        %% which does not conform to this function's spec. By reading the code (not verified
+        %% by running). It should be an explicit error.
         {ok, Stream2, Resp, <<>>} ?= recv_msg(Stream1, Timeout, <<>>),
         {ok, Trailers} ?= recv_streaming_fin(Stream2, Timeout),
         ok ?= egrpc_error:from_grpc_status(Trailers),

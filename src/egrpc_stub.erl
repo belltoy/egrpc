@@ -106,6 +106,14 @@
 %%
 %% The `info' option in `Opts' can be used to store arbitrary
 %% information associated with the channel.
+%%
+%% The calling process becomes the owner of the gun connection: the connection is closed when
+%% the owner exits, and `gun_up'/`gun_down' messages are delivered to it.
+%%
+%% By default gun starts the connection process under its own supervisor, so it is not linked to
+%% the owner. If `supervise => false' is given in `gun_opts', gun links the connection process
+%% to the owner instead, and a crash of the connection takes the owner down too unless the owner
+%% traps exits.
 -spec open(Host, Port, conn_opts()) -> {ok, channel()} | {error, any()} when
     Host :: string(),
     Port :: inet:port_number().
