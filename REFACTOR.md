@@ -290,6 +290,13 @@ Configuration: `open(H, P, #{interceptors => [Module | {Module, InitOpts} | fun/
   `application/grpc+proto`.
 - `grpc-encoding` stays hard-coded to `identity`; compression is out of scope.
 - The codec option has no place for user options yet: `init/1` receives the `Grpc` map of the call.
+- **`egrpc_json` is fixed in this change.** Today it can not send a message: the encoder returns the
+  map which the generated `to_json/2` returns, not JSON text, and the decoder would need to be given
+  a term, not the bytes of the response (found by the tests of phase 0, see "Phase 0 status"). It is
+  fixed together with `content_type/0`, because `application/grpc+json` is what the codec announces.
+  To decide when fixing: which JSON library to use (the `json` module of OTP 27 exists, the minimum
+  OTP version of egrpc has to be checked), and how to test it against a server which accepts
+  `application/grpc+json`, as GripMock may not.
 
 ### 4.5 Per-call options (P4)
 
@@ -356,7 +363,7 @@ which were already forwarded, and the behaviour after each kind of failure throu
 | Phase | Content |
 |---|---|
 | 0 | Test infrastructure and characterization tests of the parts which do not change |
-| 1 | The breaking change: record split and `derive/2`, unified interceptors, `call_credentials`, codec and `content-type`, validation, `timeout`, documentation |
+| 1 | The breaking change: record split and `derive/2`, unified interceptors, `call_credentials`, codec and `content-type` (with the `egrpc_json` fix), validation, `timeout`, documentation |
 
 Phase 1 is released as one breaking release in the 0.2.x series (0.2.0 is the first). Cutting the
 release is the maintainer's job. The work inside phase 1 can
@@ -448,7 +455,8 @@ What running them showed:
 - **`call_credentials`:** the returned metadata is in the request, and call-level `metadata` takes
   precedence; when the callback returns `{error, _}` the call is not sent; a retry from an interceptor
   calls the callback again; a return value of the wrong shape raises `invalid_call_credentials`.
-- **Codec:** the `content-type` header comes from the codec.
+- **Codec:** the `content-type` header comes from the codec; a message encoded by `egrpc_json` is a
+  binary of JSON text and decodes back to the same message.
 - **Timeout:** `timeout` in `Opts` is used for every wait of a unary call; after a timeout or a
   transport error the stream is cancelled and the mailbox has no message of it; after a local error
   the mailbox has no message of it; after a status error nothing is sent to gun.
@@ -503,6 +511,7 @@ single module on the new behaviour.
 | `close` | `error(not_closable)` on a derived channel; `closable` flag in the channel |
 | `call_credentials` | A fun which takes only the stream (no call `Opts`), called in `init_req0`, call-level `metadata` takes precedence; exceptions are not caught; the shape of the return value is checked |
 | Codec | `codec` option of `open/3` only, default `egrpc_proto`; required `content_type/0` callback |
+| `egrpc_json` | Broken today (the encoder returns a map, not text); fixed in this change, together with the codec work |
 | `grpc-encoding` | Not changed |
 | `ctx` | Postponed |
 | "Call end" hook | Not done, the streaming receive path is not redesigned |
