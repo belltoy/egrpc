@@ -1,11 +1,14 @@
 words = [
+    "bavix",
     "bidi",
     "egrpc",
     "eqwalizer",
     "erlpack",
     "gpb",
+    "gripmock",
     "gunzip",
     "ipath",
     "nofin",
+    "protoc",
 ]
 ignore_paths = [".codebook.toml"]
