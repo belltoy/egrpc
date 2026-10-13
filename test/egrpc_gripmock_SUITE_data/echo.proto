@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package egrpc.test.v1;
+
+// A service with all four kinds of RPC, used by the integration tests against a mock server.
+service Echo {
+  rpc Unary(EchoRequest) returns (EchoResponse);
+  rpc ServerStream(EchoRequest) returns (stream EchoResponse);
+  rpc ClientStream(stream EchoRequest) returns (EchoResponse);
+  rpc Bidi(stream EchoRequest) returns (stream EchoResponse);
+}
+
+message EchoRequest {
+  string message = 1;
+}
+
+message EchoResponse {
+  string message = 1;
+}
