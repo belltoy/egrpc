@@ -40,7 +40,7 @@ versions:
 | `mise exec -- rebar3 dialyzer` | Static analysis |
 | `mise exec -- rebar3 xref` | Cross reference |
 | `mise exec -- rebar3 ex_doc` | Generate docs into `doc/` (git-ignored) |
-| `mise exec -- elp lint --module <mod> --include-erlc-diagnostics --experimental` | Lint one module |
+| `mise exec -- elp lint --module <mod> --include-erlc-diagnostics --experimental --read-config` | Lint one module |
 
 There is no `test/` directory yet. Tests are inline in the modules, for example in `egrpc_error.erl`.
 Adding a test infrastructure is phase 0 of [REFACTOR.md](REFACTOR.md).
@@ -78,11 +78,22 @@ it.
 - **`maybe` expressions are used**, with `-feature(maybe_expr, enable)` in the modules.
 - **Keep the versions in sync** when preparing a release: `vsn` in `src/egrpc.app.src` and the
   dependency snippet in `README.md`. egrpc does not send a `user-agent` header.
-- **`.elp_lint.toml` uses the old key names** (`enabled_lints`/`disabled_lints`). elp otp-27 rejected
-  the same format in etcdgun with `unknown field enabled_lints`, so it is probably not applied here.
-  `W0038` (old edoc syntax) is intentionally disabled, do not "fix" it.
+- **`.elp_lint.toml` is only read with `--read-config`**, and it is a local file: it is excluded
+  through `.git/info/exclude` and is not in the repository. elp 1.1.0 (otp-27) needs the `linters`
+  table; the old `enabled_lints`/`disabled_lints` keys are rejected with `unknown field`. Write
+  `enabled = false`, `disabled = true` is accepted but has no effect:
+
+  ```toml
+  [linters.W0038]
+  enabled = false
+  [linters.W0051]
+  enabled = false
+  ```
+
+  `W0038` (old edoc syntax) is intentionally disabled, do not "fix" it. It would be reported for the
+  generated clients which can not be edited.
 - **Git-ignored files:** `doc/`, `rebar.lock`, `.mise.toml`, `config/sys.dev.config`,
-  `rebar3.crashdump`. Do not commit them.
+  `rebar3.crashdump`, and `.elp_lint.toml` (locally excluded). Do not commit them.
 
 ## Conventions
 
