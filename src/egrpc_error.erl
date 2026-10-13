@@ -34,12 +34,18 @@
 from_grpc_status(Headers) ->
     Status = get_header(?GRPC_HEADER_STATUS, Headers, <<"0">>),
     Message = get_header(?GRPC_HEADER_MESSAGE, Headers, <<>>),
-    case Status of
-        <<"0">> -> ok;
-        <<N:8>> when $0 < N, N =< $9 ->
+    case parse_status(Status) of
+        ?GRPC_STATUS_OK -> ok;
+        N when is_integer(N), N >= ?GRPC_STATUS_CANCELED, N =< ?GRPC_STATUS_UNAUTHENTICATED ->
             %% TODO: Handle grpc-status-details-bin
-            {error, {grpc_error, error_name(N - $0), Message}};
+            {error, {grpc_error, error_name(N), Message}};
         _ -> {error, {grpc_error, error_name(?GRPC_STATUS_UNKNOWN), Message}}
+    end.
+
+%% The status is a decimal number, may have more than one digit, e.g. `16'.
+parse_status(Status) ->
+    try binary_to_integer(Status)
+    catch error:badarg -> invalid
     end.
 
 -type value(T) :: T.
@@ -64,3 +70,23 @@ error_name(?GRPC_STATUS_INTERNAL)            -> internal;
 error_name(?GRPC_STATUS_UNAVAILABLE)         -> unavailable;
 error_name(?GRPC_STATUS_DATA_LOSS)           -> data_loss;
 error_name(?GRPC_STATUS_UNAUTHENTICATED)     -> unauthenticated.
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+from_grpc_status_test() ->
+    Err = fun(S) -> from_grpc_status([{?GRPC_HEADER_STATUS, S}, {?GRPC_HEADER_MESSAGE, <<"m">>}]) end,
+    ?assertEqual(ok, from_grpc_status([])),
+    ?assertEqual(ok, Err(<<"0">>)),
+    ?assertEqual({error, {grpc_error, invalid_argument, <<"m">>}}, Err(<<"3">>)),
+    %% Two-digit statuses must not fall back to `unknown'.
+    ?assertEqual({error, {grpc_error, aborted, <<"m">>}}, Err(<<"10">>)),
+    ?assertEqual({error, {grpc_error, out_of_range, <<"m">>}}, Err(<<"11">>)),
+    ?assertEqual({error, {grpc_error, unavailable, <<"m">>}}, Err(<<"14">>)),
+    ?assertEqual({error, {grpc_error, unauthenticated, <<"m">>}}, Err(<<"16">>)),
+    %% Out of range or malformed statuses are `unknown'.
+    ?assertEqual({error, {grpc_error, unknown, <<"m">>}}, Err(<<"17">>)),
+    ?assertEqual({error, {grpc_error, unknown, <<"m">>}}, Err(<<"-1">>)),
+    ?assertEqual({error, {grpc_error, unknown, <<"m">>}}, Err(<<"abc">>)),
+    ok.
+-endif.
