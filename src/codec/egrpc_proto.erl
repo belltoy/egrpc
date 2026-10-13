@@ -4,7 +4,7 @@
 
 -behaviour(egrpc_codec).
 
--export([init/1]).
+-export([init/1, content_type/0]).
 
 -spec init(egrpc:grpc()) -> {egrpc_codec:encoder(), egrpc_codec:decoder()}.
 init(#{pb_module := PbModule, rpc_def := RpcDef}) ->
@@ -12,6 +12,9 @@ init(#{pb_module := PbModule, rpc_def := RpcDef}) ->
     Encoder = fun(RequestMsg) -> PbModule:encode_msg(RequestMsg, Input) end,
     Decoder = fun(ResponseBin) -> PbModule:decode_msg(ResponseBin, Output) end,
     {Encoder, Decoder}.
+
+-spec content_type() -> binary().
+content_type() -> <<"application/grpc+proto">>.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

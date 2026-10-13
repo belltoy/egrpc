@@ -5,13 +5,17 @@
 
 -behaviour(egrpc_codec).
 
--export([init/1]).
+-export([init/1, content_type/0]).
 
 -spec init(any()) -> {egrpc_codec:encoder(), egrpc_codec:decoder()}.
 init(_) ->
     Encoder = fun(Msg) -> erlang:term_to_binary(Msg) end,
     Decoder = fun(Bin) -> erlang:binary_to_term(Bin) end,
     {Encoder, Decoder}.
+
+%% Not a standard encoding, the gRPC protocol allows a custom suffix.
+-spec content_type() -> binary().
+content_type() -> <<"application/grpc+erlpack">>.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

@@ -82,11 +82,10 @@
     fun((stream(), Buf :: binary()) ->
         {ok, stream(), Response :: map(), Rest :: binary()} | more | {error, any()}).
 
-%% TODO:
+%% The headers of every request, the `content-type' is the one of the codec.
 -define(DEFAULT_HEADERS, #{
     <<"grpc-encoding">> => <<"identity">>,
-    <<"te">> => <<"trailers">>,
-    <<"content-type">> => <<"application/grpc+proto">>
+    <<"te">> => <<"trailers">>
 }).
 
 -spec new(egrpc_stub:channel(), egrpc:grpc()) -> stream().
@@ -180,7 +179,9 @@ init_req0(#stream{channel = Channel, grpc = #{path := Path}} = Stream, Opts) ->
                 fun(Key, _Value) -> string:prefix(Key, "grpc-") =:= nomatch end,
                 Metadata
             ),
-            Headers = maps:merge(CustomMetadata, ?DEFAULT_HEADERS),
+            ContentType = egrpc_codec:content_type(egrpc_stub:codec(Channel)),
+            Defaults = maps:put(<<"content-type">>, ContentType, ?DEFAULT_HEADERS),
+            Headers = maps:merge(CustomMetadata, Defaults),
             SRef = gun:post(ConnPid, Path, Headers),
             {ok, Stream#stream{stream_ref = SRef}};
         {error, Reason} ->

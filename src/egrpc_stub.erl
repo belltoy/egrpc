@@ -100,6 +100,8 @@
     gun_opts => gun:opts(),
     interceptors => [egrpc_interceptor:spec()],
     call_credentials => call_credentials() | undefined,
+    %% The module of the codec, `egrpc_proto' by default. Not an option of `derive/2'.
+    codec => module(),
     retry => non_neg_integer(),
     info => term()
 }.
@@ -137,6 +139,10 @@
 
 %% @doc Open a gRPC channel to the given Host and Port with options.
 %%
+%% The `codec' option is the module which encodes and decodes the messages, it implements
+%% `m:egrpc_codec', and `egrpc_proto' by default. A module which is not a codec raises
+%% `error({invalid_codec, Module})'. The codec is not an option of `derive/2'.
+%%
 %% The `info' option in `Opts' can be used to store arbitrary
 %% information associated with the channel, `derive/2' can replace it.
 %%
@@ -155,13 +161,15 @@ open(Host, Port, Opts0) ->
     GunOpts = maps:merge(#{retry => 0, protocols => [http2]}, GunOpts0),
 
     ok = check_removed_opts(Opts0),
+    Codec = maps:get(codec, Opts0, egrpc_proto),
+    egrpc_codec:is_codec(Codec) orelse error({invalid_codec, Codec}),
     Pipeline = maps:fold(fun set_pipeline_opt/3, new_pipeline(), maps:with(?PIPELINE_OPTS, Opts0)),
 
     maybe
         {ok, ConnPid} ?= gun:open(Host, Port, GunOpts),
         Channel = #channel{
             conn = #conn{host = Host, port = Port, conn_pid = ConnPid},
-            codec = egrpc_proto,
+            codec = Codec,
             pipeline = Pipeline,
             closable = true
         },
@@ -376,6 +384,14 @@ derive_call_credentials_test() ->
     %% kept when absent, cleared explicitly
     ?assertEqual(Cred, call_credentials(derive(D, #{info => x}))),
     ?assertEqual(undefined, call_credentials(derive(D, #{call_credentials => undefined}))).
+
+open_invalid_codec_test() ->
+    ?assertError({invalid_codec, lists}, open("h", 1, #{codec => lists})),
+    ?assertError({invalid_codec, "proto"}, open("h", 1, #{codec => "proto"})).
+
+derive_codec_test() ->
+    ?assertError({invalid_option, codec}, derive(test_channel(), #{codec => egrpc_json})),
+    ?assertEqual(egrpc_proto, codec(derive(test_channel(), #{info => x}))).
 
 open_removed_option_test() ->
     ?assertError({removed_option, unary_interceptors}, open("h", 1, #{unary_interceptors => []})),

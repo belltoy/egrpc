@@ -97,6 +97,10 @@ it, in a `conn` part which derived channels share; the `pipeline` part (intercep
   `derive/2`, called in `init_req0` before every call is sent (once for a stream). The metadata of
   the call takes precedence, `{error, Reason}` gives `{error, {call_credentials, Reason}}` without
   sending, an exception of the callback is not caught.
+- **The codec** is the `codec` option of `open/3` only (default `egrpc_proto`, not an option of
+  `derive/2`). A codec implements `init/1` and `content_type/0`, the latter is the `content-type`
+  header of the requests. `egrpc_json` needs OTP 27 (`json` module) and a pb module generated with
+  gpb's `json` option.
 - **A hook can stop a call** by returning `{error, Reason}`, so `egrpc_stream:send_msg/3` and
   `close_send/1` return `{ok, Stream} | {error, Reason}` (they returned a bare stream before).
 - **The unary response timeout is hard-coded** to 5000 ms in `egrpc_stream:unary/3`.
