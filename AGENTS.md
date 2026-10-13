@@ -37,6 +37,7 @@ versions:
 | `mise exec -- rebar3 compile` | Build |
 | `mise exec -- rebar3 eunit` | Run the inline eunit tests (`-ifdef(TEST)` in the modules) |
 | `mise exec -- rebar3 ct` | Run the Common Test suites in `test/` (see Tests below) |
+| `mise exec -- rebar3 do eunit, ct, covertool generate` | Run both and write the coverage report (Cobertura XML) to `_build/test/covertool/egrpc.covertool.xml`; `rebar3 cover -v` prints it |
 | `mise exec -- rebar3 fmt -w` | Format with erlfmt |
 | `mise exec -- rebar3 dialyzer` | Static analysis |
 | `mise exec -- rebar3 xref` | Cross reference |

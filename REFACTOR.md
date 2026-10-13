@@ -294,9 +294,10 @@ Configuration: `open(H, P, #{interceptors => [Module | {Module, InitOpts} | fun/
   map which the generated `to_json/2` returns, not JSON text, and the decoder would need to be given
   a term, not the bytes of the response (found by the tests of phase 0, see "Phase 0 status"). It is
   fixed together with `content_type/0`, because `application/grpc+json` is what the codec announces.
-  To decide when fixing: which JSON library to use (the `json` module of OTP 27 exists, the minimum
-  OTP version of egrpc has to be checked), and how to test it against a server which accepts
-  `application/grpc+json`, as GripMock may not.
+  Decided: the minimum OTP version of egrpc is 27 and the codec uses the `json` module of OTP
+  (`rebar.config` gets `{minimum_otp_vsn, "27"}`). Still to see when fixing: how to test it against a
+  server which accepts `application/grpc+json`, as GripMock may not; the fake server can answer with
+  JSON text to test the client side.
 
 ### 4.5 Per-call options (P4)
 
