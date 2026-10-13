@@ -79,6 +79,7 @@ encode_test() ->
     ?assertEqual(<<0, 0:32>>, encode(identity, <<>>)),
     Gz = encode(gzip, <<"abc">>),
     ?assertMatch(<<1, _:32, _/binary>>, Gz),
+    %% eqwalizer:ignore
     ?assertThrow({error, {unknown_encoding, deflate}}, encode(deflate, <<"abc">>)).
 
 roundtrip_test() ->
@@ -86,6 +87,7 @@ roundtrip_test() ->
     lists:foreach(
         fun(Encoding) ->
             Msg = crypto:strong_rand_bytes(300),
+            % eqwalizer:ignore
             ?assertEqual({ok, Msg, <<>>}, decode(Encoding, Id, encode(Encoding, Msg)))
         end,
         [identity, gzip]
@@ -103,7 +105,7 @@ decode_split_test() ->
     Id = fun(Bin) -> Bin end,
     Frame = encode(identity, <<"hello">>),
     lists:foreach(
-        fun(N) ->
+        fun(N) when is_integer(N) ->
             <<Part:N/binary, _/binary>> = Frame,
             ?assertEqual(more, decode(identity, Id, Part))
         end,

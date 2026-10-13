@@ -140,11 +140,13 @@ load(Specs) when is_list(Specs) ->
     {Items, States, _} = lists:foldl(
         fun(Spec, {Items0, States0, Idx}) ->
             {Item, State} = load_one(Spec),
+            % eqwalizer:ignore
             {[Item | Items0], States0#{Idx => State}, Idx + 1}
         end,
         {[], #{}, 1},
         Specs
     ),
+    % eqwalizer:ignore
     {lists:reverse(Items), States};
 load(Specs) ->
     error({invalid_interceptors, Specs}).
@@ -183,7 +185,9 @@ is_impl(Module, Function, Arity) ->
 is_behaviour_impl(Module) ->
     try
         Attrs = Module:module_info(attributes),
+        % eqwalizer:ignore
         Behaviours = proplists:get_value(behaviour, Attrs, []) ++
+            % eqwalizer:ignore
             proplists:get_value(behavior, Attrs, []),
         lists:member(?MODULE, Behaviours)
     catch
@@ -202,6 +206,7 @@ load_test() ->
     ?assertMatch({[{'fun', _}, {'fun', _}], #{1 := undefined, 2 := undefined}}, load([Fun, Fun])).
 
 load_invalid_test() ->
+    % eqwalizer:ignore
     ?assertError({invalid_interceptor, 42}, load([42])),
     ?assertError({invalid_interceptor, not_a_module_at_all}, load([not_a_module_at_all])),
     %% a module which does not implement the behaviour
@@ -209,6 +214,8 @@ load_invalid_test() ->
     ?assertError({invalid_interceptor, {lists, []}}, load([{lists, []}])),
     %% a fun of the wrong arity
     Fun3 = fun(_, _, _) -> ok end,
+    % eqwalizer:ignore
     ?assertError({invalid_interceptor, Fun3}, load([Fun3])),
+    % eqwalizer:ignore
     ?assertError({invalid_interceptors, foo}, load(foo)).
 -endif.

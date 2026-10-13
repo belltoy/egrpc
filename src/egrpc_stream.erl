@@ -149,7 +149,9 @@ unary(#stream{chain = #chain{unary = Wraps}} = Stream0, Request0, Opts0) ->
             end
         end,
     %% The first interceptor is the outermost.
+    % eqwalizer:ignore
     F = lists:foldr(fun(Wrap, Next) -> Wrap(Next) end, Next0, Wraps),
+    % eqwalizer:ignore
     F(Stream0, Request0, Opts0).
 
 server_streaming(#stream{} = Stream0, Request, Opts) ->
@@ -415,6 +417,7 @@ build_chain(Items) ->
     Indexed = lists:enumerate(Items),
     Modules = [{Idx, M} || {Idx, {module, M}} <- Indexed],
     Impl = fun(Function, Arity) ->
+        % eqwalizer:ignore
         [{Idx, M} || {Idx, M} <- Modules, egrpc_interceptor:is_impl(M, Function, Arity)]
     end,
     #chain{
@@ -423,6 +426,7 @@ build_chain(Items) ->
          || {Idx, Item} <- Indexed,
             case Item of
                 {'fun', _} -> true;
+                % eqwalizer:ignore
                 {module, M} -> egrpc_interceptor:is_impl(M, unary, 5)
             end
         ],
@@ -440,6 +444,7 @@ build_chain(Items) ->
 
 %% The first wrap is the outermost.
 compose(Wraps, Base) ->
+    % eqwalizer:ignore
     lists:foldr(fun(Wrap, Next) -> Wrap(Next) end, Base, Wraps).
 
 state(#stream{states = States}, Idx) -> maps:get(Idx, States, undefined).

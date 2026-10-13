@@ -21,7 +21,19 @@ content_type() -> <<"application/grpc+proto">>.
 
 roundtrip_test() ->
     Msg = 'grpc.health.v1.HealthCheckRequest',
-    {Encoder, Decoder} = init(#{pb_module => egrpc_health_pb, rpc_def => #{input => Msg, output => Msg}}),
+    {Encoder, Decoder} = init(#{
+        path => <<"/grpc.health.v1.Health/Check">>,
+        service_name => 'grpc.health.v1.Health',
+        pb_module => egrpc_health_pb,
+        rpc_def => #{
+            input => Msg,
+            output => Msg,
+            name => check,
+            input_stream => false,
+            output_stream => false,
+            opts => []
+        }
+    }),
     Bin = Encoder(#{service => <<"abc">>}),
     ?assert(is_binary(Bin)),
     ?assertEqual(#{service => <<"abc">>}, Decoder(Bin)),

@@ -377,14 +377,23 @@ derive_test() ->
 
 derive_invalid_option_test() ->
     Ch = test_channel(),
+    % eqwalizer:ignore
     ?assertError({invalid_option, gun_opts}, derive(Ch, #{gun_opts => #{}})),
+    % eqwalizer:ignore
     ?assertError({invalid_option, retry}, derive(Ch, #{retry => 1, info => x})),
+    % eqwalizer:ignore
     ?assertError({invalid_option, foo}, derive(Ch, #{foo => bar})),
+    % eqwalizer:ignore
     ?assertError({removed_option, unary_interceptors}, derive(Ch, #{unary_interceptors => []})),
+    % eqwalizer:ignore
     ?assertError({removed_option, stream_interceptors}, derive(Ch, #{stream_interceptors => []})),
+    % eqwalizer:ignore
     ?assertError({invalid_interceptor, 42}, derive(Ch, #{interceptors => [42]})),
+    % eqwalizer:ignore
     ?assertError({invalid_interceptors, foo}, derive(Ch, #{interceptors => foo})),
+    % eqwalizer:ignore
     ?assertError({invalid_call_credentials, foo}, derive(Ch, #{call_credentials => foo})),
+    % eqwalizer:ignore
     ?assertError({invalid_call_credentials, _}, derive(Ch, #{call_credentials => fun() -> ok end})).
 
 derive_call_credentials_test() ->
@@ -399,14 +408,18 @@ derive_call_credentials_test() ->
 
 open_invalid_codec_test() ->
     ?assertError({invalid_codec, lists}, open("h", 1, #{codec => lists})),
+    % eqwalizer:ignore
     ?assertError({invalid_codec, "proto"}, open("h", 1, #{codec => "proto"})).
 
 derive_codec_test() ->
+    % eqwalizer:ignore
     ?assertError({invalid_option, codec}, derive(test_channel(), #{codec => egrpc_json})),
     ?assertEqual(egrpc_proto, codec(derive(test_channel(), #{info => x}))).
 
 open_removed_option_test() ->
+    % eqwalizer:ignore
     ?assertError({removed_option, unary_interceptors}, open("h", 1, #{unary_interceptors => []})),
+    % eqwalizer:ignore
     ?assertError({removed_option, stream_interceptors}, open("h", 1, #{stream_interceptors => []})).
 
 close_not_closable_test() ->

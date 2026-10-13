@@ -1,9 +1,11 @@
 words = [
+    "Creds",
     "bavix",
     "bidi",
     "egrpc",
     "eqwalizer",
     "erlpack",
+    "getters",
     "gpb",
     "gripmock",
     "gunzip",

@@ -98,7 +98,7 @@ status_names_test() ->
         unimplemented, internal, unavailable, data_loss, unauthenticated
     ],
     lists:foreach(
-        fun({Status, Name}) ->
+        fun({Status, Name}) when is_integer(Status) ->
             Headers = [{?GRPC_HEADER_STATUS, integer_to_binary(Status)}],
             ?assertEqual({error, {grpc_error, Name, <<>>}}, from_grpc_status(Headers))
         end,
