@@ -356,7 +356,9 @@ be done in this order: record split, `derive/2` and `closable`, unified intercep
 
 ### Phase 0: test infrastructure
 
-egrpc has no tests at all, so refactoring can not start directly. Two layers:
+egrpc has no tests at all, so refactoring can not start directly. egrpc is a general-purpose gRPC
+client library, so the test suite must not depend on one particular server (such as etcd). Four
+layers:
 
 1. **Pure logic tests (eunit, no network):**
    - Unary interceptor chain: build a fake `Next`, assert the execution order, the rewriting of
@@ -366,15 +368,35 @@ egrpc has no tests at all, so refactoring can not start directly. Two layers:
    - `egrpc_error:from_grpc_status/1` (there is already an inline test; complete it for statuses 0-16
      and malformed values).
    - The normalization of `open/3` (testable once extracted as a pure function).
-2. **Integration tests (Common Test, needs docker, skipped when docker is not available):**
-   - Target: a single-node etcd (`quay.io/coreos/etcd`). `grpc.health.v1.Health.Check` covers unary,
-     `Watch` covers bidirectional streaming. With authentication enabled etcd also covers per-call
-     credentials.
-   - A temporary container is started with docker; the whole suite is skipped when docker is not
-     available, so `rebar3 eunit` is not affected.
-   - The stream cleanup rules of 4.5 must be checked here by running: what is left in the mailbox
-     after a timeout, a status error and a local error, and what `gun:cancel` does on a stream which
-     is already finished.
+2. **An in-process fake server (Common Test, no docker):** a test-only server on cowboy (HTTP/2 over
+   plain TCP), which controls the exact bytes and the timing of the response. It covers what a real
+   server never does:
+   - local errors: a message which fails to decode, a compressed flag of 1 with an unsupported
+     encoding, an invalid compressed flag, an unexpected `END_STREAM` on a data frame, a missing
+     trailers frame;
+   - a trailers-only error response;
+   - a timeout (the server does not reply) and a transport error (the server closes the socket);
+   - the stream cleanup rules of 4.5, **checked here by running**: what is left in the caller's
+     mailbox after a timeout, a status error and a local error, and what `gun:cancel` does on a
+     stream which is already finished.
+
+   Whether cowboy can send arbitrary frames and control `END_STREAM` and the trailers precisely has
+   to be tried first; if it can not, the fake server is a minimal HTTP/2 server written in the tests.
+3. **GripMock (`bavix/gripmock`, Common Test, docker or the binary):** an independent gRPC server
+   implementation (grpc-go). It checks that egrpc interoperates with a server which does not share
+   egrpc's understanding of the protocol: the four kinds of RPC, status errors, request metadata and
+   credentials (through its history and verify API). It needs a test `.proto` with all four kinds of
+   RPC (the protos of egrpc have no client streaming one); the pb module and the client for it are
+   generated in the test profile. GripMock only sends well-formed gRPC, so it does not replace
+   layer 2. The syntax of its delay and trailers has to be checked by running.
+4. **A real server (optional):** an etcd container (`quay.io/coreos/etcd`) for scenarios where a real
+   server is useful: `grpc.health.v1.Health.Check`, `Watch`, and authentication, whose per-version
+   differences (which RPCs need a token) are known. It is a regression aid for etcdgun, not a
+   prerequisite of the suite.
+
+Every external requirement (docker, the GripMock binary or image, the etcd image) is checked on its
+own and only its group is skipped when it is missing. `rebar3 eunit` needs none of them, and the fake
+server group needs only cowboy.
 
 The characterization tests should only pin down what survives the refactoring: encoding and decoding,
 framing, error mapping and the transport behaviour of a unary call. The old interceptor behaviour is
@@ -454,7 +476,7 @@ single module on the new behaviour.
 | Stream cleanup on failure | `cancel` + `flush` on timeout and transport errors; `flush` only on local errors; nothing on status errors. **To be verified strictly by running** (see 4.5) |
 | `await_up` | New `await_up/2` with a `Timeout`; `await_up/1` is `await_up(Channel, 5000)` |
 | Release | One breaking release in the 0.2.x series |
-| Integration tests | A Common Test suite which depends on docker is accepted; it is skipped when docker is not available, so `rebar3 eunit` does not depend on it |
+| Tests | Four layers: eunit; an in-process fake server on cowboy; GripMock (`bavix/gripmock`); optional etcd. The suite does not depend on one particular server, and each external requirement is skipped on its own when missing |
 | Small problems | Fixed in separate commits (versions, elp configuration); `headers` is removed with the record split; a `user-agent` header is a later candidate |
 
 ### Open
