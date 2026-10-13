@@ -256,8 +256,12 @@ recv_header0(#stream{channel = Channel, stream_ref = SRef} = Stream, Timeout) ->
         Other -> Other
     end.
 
+%% @doc Receive the next message of the response, `Buf' is what is left of the data received.
+%%
+%% When the stream ends, the trailers are read: `{error, eos}' is returned for an OK status, and
+%% the `grpc_error' of the status otherwise.
 -spec recv_msg(stream(), timeout(), binary()) -> Result when
-    Result :: {ok, stream(), map(), binary()} | {error, any()}.
+    Result :: {ok, stream(), map(), binary()} | {error, eos | any()}.
 recv_msg(#stream{chain = #chain{recv_msg = F}} = Stream, Timeout, Buf) ->
     F(Stream, Timeout, Buf).
 
@@ -279,14 +283,18 @@ recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) 
                              <<"Received END_STREAM flag in response data frame">>}};
                 {data, nofin, <<Data/binary>>} ->
                     recv_msg0(Stream, Timeout, <<Buf/binary, Data/binary>>);
-                %% NOTE: there is no `{trailers, _}' clause here. By reading the code (not verified
-                %% by running), when a streaming response ends normally `gun:await/3' returns
-                %% `{trailers, Trailers}', which would raise `case_clause'. Streaming callers
-                %% seem to be expected to drive `gun:await' themselves and use `parse_msg/2'.
-                %% This also means egrpc never observes the end of a streaming call.
+                {trailers, Trailers} ->
+                    %% The end of the stream: `eos' when the status is OK, the error of the
+                    %% status otherwise.
+                    case egrpc_error:from_grpc_status(Trailers) of
+                        ok -> {error, eos};
+                        {error, _} = Error -> Error
+                    end;
                 {error, _} = Error ->
                     %% Error receiving data, return the error.
-                    Error
+                    Error;
+                _Other ->
+                    {error, {grpc_error, internal, <<"Unexpected response while waiting for a message">>}}
             end
     end.
 
@@ -386,6 +394,9 @@ recv_one_msg(#stream{} = Stream, Timeout) ->
             {ok, Stream1, Resp};
         {ok, _Stream, _Resp, _Rest} ->
             {error, {grpc_error, internal, <<"Unexpected data after the response message">>}};
+        {error, eos} ->
+            %% The status is OK but there is no message, a unary response has one.
+            {error, {grpc_error, internal, <<"The response has no message">>}};
         Other ->
             Other
     end.

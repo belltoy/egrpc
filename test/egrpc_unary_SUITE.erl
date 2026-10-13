@@ -18,6 +18,10 @@
     invalid_compressed_flag/1,
     end_stream_on_data/1,
     data_after_message/1,
+    no_message_status_ok/1,
+    no_message_status_error/1,
+    watch_ends_with_status/1,
+    watch_ends_with_error/1,
     connection_closed/1,
     timeout_default/1,
     timeout_option/1,
@@ -42,6 +46,10 @@ all() ->
         invalid_compressed_flag,
         end_stream_on_data,
         data_after_message,
+        no_message_status_ok,
+        no_message_status_error,
+        watch_ends_with_status,
+        watch_ends_with_error,
         connection_closed,
         timeout_default,
         timeout_option,
@@ -172,6 +180,60 @@ data_after_message(_Config) ->
     ?assertEqual({error, {grpc_error, internal, <<"Unexpected data after the response message">>}},
                  ?CHECK(Ch, #{})),
     done(Srv).
+
+%% The response is started and finished with a status, with no message in between.
+no_message_status_ok(_Config) ->
+    Actions = [
+        {headers, [{<<"content-type">>, <<"application/grpc">>}]},
+        {trailers, [{<<"grpc-status">>, <<"0">>}]}
+    ],
+    Srv = {_, Ch} = serve(Actions),
+    ?assertEqual({error, {grpc_error, internal, <<"The response has no message">>}},
+                 ?CHECK(Ch, #{})),
+    done(Srv).
+
+no_message_status_error(_Config) ->
+    Actions = [
+        {headers, [{<<"content-type">>, <<"application/grpc">>}]},
+        {trailers, [{<<"grpc-status">>, <<"14">>}, {<<"grpc-message">>, <<"gone">>}]}
+    ],
+    Srv = {_, Ch} = serve(Actions),
+    ?assertEqual({error, {grpc_error, unavailable, <<"gone">>}}, ?CHECK(Ch, #{})),
+    done(Srv).
+
+%% `recv_msg/3' of a streaming call returns what the trailers say when the stream ends: `eos' for
+%% an OK status, the error of the status otherwise.
+watch_ends_with_status(_Config) ->
+    Frame = egrpc_fake_server:frame(egrpc_test_util:health_response('SERVING')),
+    Actions = [
+        {headers, [{<<"content-type">>, <<"application/grpc">>}]},
+        {data, Frame},
+        {trailers, [{<<"grpc-status">>, <<"0">>}]}
+    ],
+    Srv = {_, Ch} = serve(Actions),
+    {ok, S0} = egrpc_health_watch(Ch),
+    {ok, S1} = egrpc_stream:recv_header(S0, 2000),
+    {ok, S2, #{status := 'SERVING'}, <<>>} = egrpc_stream:recv_msg(S1, 2000, <<>>),
+    ?assertEqual({error, eos}, egrpc_stream:recv_msg(S2, 2000, <<>>)),
+    done(Srv).
+
+watch_ends_with_error(_Config) ->
+    Frame = egrpc_fake_server:frame(egrpc_test_util:health_response('SERVING')),
+    Actions = [
+        {headers, [{<<"content-type">>, <<"application/grpc">>}]},
+        {data, Frame},
+        {trailers, [{<<"grpc-status">>, <<"16">>}, {<<"grpc-message">>, <<"bad token">>}]}
+    ],
+    Srv = {_, Ch} = serve(Actions),
+    {ok, S0} = egrpc_health_watch(Ch),
+    {ok, S1} = egrpc_stream:recv_header(S0, 2000),
+    {ok, S2, _, <<>>} = egrpc_stream:recv_msg(S1, 2000, <<>>),
+    ?assertEqual({error, {grpc_error, unauthenticated, <<"bad token">>}},
+                 egrpc_stream:recv_msg(S2, 2000, <<>>)),
+    done(Srv).
+
+egrpc_health_watch(Ch) ->
+    egrpc_grpc_health_v1_health_client:watch(Ch, #{service => <<"s">>}).
 
 connection_closed(_Config) ->
     Srv = {_, Ch} = serve([close]),

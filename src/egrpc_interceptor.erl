@@ -30,7 +30,13 @@
 %% with `IsFin = fin' and `recv_msg/5' once with an empty buffer. `close_send/3' and `parse_msg/4'
 %% only make sense for streaming calls and do not fire for a unary call.
 %%
-%% A hook can return `{error, Reason}' to stop the call, the call is not sent any further.
+%% `init_req/4' fires for unary calls too, so an interceptor which only means streaming calls
+%% checks `egrpc_stream:grpc_type/1' (`unary' or not) itself, as `fun/4' interceptors are only for
+%% unary calls.
+%%
+%% A hook can return `{error, Reason}' to stop the call, the call is not sent any further. egrpc
+%% does not cancel the HTTP/2 stream for a hook which returns an error after it called `Next', the
+%% stream which `Next' returned is the hook's to cancel with `egrpc_stream:cancel_stream/1'.
 %%
 %% == State ==
 %%

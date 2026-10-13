@@ -203,7 +203,7 @@ recv_n(N, Stream0, Buf, Acc) ->
     {ok, Stream, Msg, Rest} = egrpc_stream:recv_msg(Stream0, 5000, Buf),
     recv_n(N - 1, Stream, Rest, [Msg | Acc]).
 
-%% The end of a streaming call is not observed by egrpc, read the trailers from gun.
+%% The status at the end of a streaming call, read the trailers from gun.
 recv_status(Stream) ->
     case gun:await(egrpc_stub:conn_pid(Stream), egrpc_stream:stream_ref(Stream), 5000) of
         {trailers, Trailers} -> egrpc_error:from_grpc_status(Trailers);

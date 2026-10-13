@@ -190,7 +190,9 @@ open(Host, Port, Opts0) ->
 %% explicit, for example `interceptors => []'.
 %%
 %% No connection is opened. The interceptors of `Opts' are initialized for the derived channel,
-%% their state is independent of the original. `call_credentials => undefined' clears the
+%% their state is independent of the original. Only when the `interceptors' key is present are
+%% they initialized, `init/1' is called again for every one of them. Deriving with `info' or
+%% `call_credentials' only is cheap, it can be done for every call. `call_credentials => undefined' clears the
 %% credentials.
 %%
 %% An option which is not an option of the pipeline, such as `gun_opts' or `retry', raises
