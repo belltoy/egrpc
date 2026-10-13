@@ -136,9 +136,9 @@ client_streaming(Config) ->
         output => #{data => #{message => <<"xy">>}}
     }),
     {ok, Stream0} = egrpc_stub:client_streaming(?config(channel, Config), grpc(<<"ClientStream">>), #{}),
-    Stream1 = egrpc_stream:send_msg(Stream0, #{message => <<"x">>}, nofin),
-    Stream2 = egrpc_stream:send_msg(Stream1, #{message => <<"y">>}, nofin),
-    Stream3 = egrpc_stream:close_send(Stream2),
+    {ok, Stream1} = egrpc_stream:send_msg(Stream0, #{message => <<"x">>}, nofin),
+    {ok, Stream2} = egrpc_stream:send_msg(Stream1, #{message => <<"y">>}, nofin),
+    {ok, Stream3} = egrpc_stream:close_send(Stream2),
     {ok, Stream4} = egrpc_stream:recv_header(Stream3, 5000),
     {[Msg], Stream} = recv_n(1, Stream4, <<>>, []),
     ?assertEqual(#{message => <<"xy">>}, Msg),
@@ -157,12 +157,12 @@ bidi_streaming(Config) ->
         [{<<"b1">>, <<"echo1">>}, {<<"b2">>, <<"echo2">>}]
     ),
     {ok, Stream0} = egrpc_stub:bidi_streaming(?config(channel, Config), grpc(<<"Bidi">>), #{}),
-    Stream1 = egrpc_stream:send_msg(Stream0, #{message => <<"b1">>}, nofin),
+    {ok, Stream1} = egrpc_stream:send_msg(Stream0, #{message => <<"b1">>}, nofin),
     {ok, Stream2} = egrpc_stream:recv_header(Stream1, 5000),
     {[M1], Stream3} = recv_n(1, Stream2, <<>>, []),
-    Stream4 = egrpc_stream:send_msg(Stream3, #{message => <<"b2">>}, nofin),
+    {ok, Stream4} = egrpc_stream:send_msg(Stream3, #{message => <<"b2">>}, nofin),
     {[M2], Stream5} = recv_n(1, Stream4, <<>>, []),
-    Stream6 = egrpc_stream:close_send(Stream5),
+    {ok, Stream6} = egrpc_stream:close_send(Stream5),
     ?assertEqual([#{message => <<"echo1">>}, #{message => <<"echo2">>}], [M1, M2]),
     ?assertEqual(ok, recv_status(Stream6)).
 

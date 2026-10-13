@@ -69,8 +69,8 @@ versions:
 |---|---|
 | `egrpc` | Public types only (`channel()`, `stream()`, `grpc()`, ...) |
 | `egrpc_stub` | Channel: `open/3`, `derive/2`, `await_up/1`, `close/1,2`, `info/1,2`, and the `unary/4` and streaming entry points used by generated clients |
-| `egrpc_stream` | One call: headers, encoding, interceptor chains, `send_msg`, `recv_*`, `parse_msg`, `cancel_stream` |
-| `egrpc_stream_interceptor` | Behaviour of streaming interceptors (6 optional hooks) |
+| `egrpc_stream` | One call: headers, encoding, `build_chain/1` (the composed hooks), `send_msg`, `recv_*`, `parse_msg`, `cancel_stream` |
+| `egrpc_interceptor` | Behaviour of interceptors: `unary/5` wraps a unary call, 6 hooks for the phases of a call; `load/1` validates and initializes a list of interceptors |
 | `egrpc_codec`, `src/codec/*` | Codec behaviour and implementations: `egrpc_proto`, `egrpc_json`, `egrpc_erlpack` |
 | `egrpc_grpc` | gRPC message framing |
 | `egrpc_error` | `grpc-status` to `{grpc_error, Name, Message}` mapping |
@@ -88,10 +88,13 @@ it, in a `conn` part which derived channels share; the `pipeline` part (intercep
   closes it. `close(Channel, true)` is `gun:close/1`, immediate.
 - **gun messages go to the requesting process.** Responses of a stream are delivered to the process
   which made the request, and `gun_up`/`gun_down` go to the process which opened the connection.
-- **Unary interceptors:** a list of `fun/4`, run in the caller process. The first element is the
-  innermost, the last is the outermost (`lists:foldl`). The order is not documented in the code.
-- **Streaming interceptors:** modules implementing `egrpc_stream_interceptor`. Invalid elements are
-  silently dropped by `open/3`.
+- **Interceptors:** one list in the `interceptors` option of `open/3` and `derive/2`, `Module`,
+  `{Module, InitOpts}` or a `fun/4` (a stateless wrap of unary calls). The first element is the
+  outermost. The `unary/5` wraps are outside all the hooks, and the hooks fire for unary calls too.
+  The state is by position. `unary_interceptors` and `stream_interceptors` are removed, `open/3`
+  raises `error({removed_option, Key})` for them. All of it runs in the caller process.
+- **A hook can stop a call** by returning `{error, Reason}`, so `egrpc_stream:send_msg/3` and
+  `close_send/1` return `{ok, Stream} | {error, Reason}` (they returned a bare stream before).
 - **The unary response timeout is hard-coded** to 5000 ms in `egrpc_stream:unary/3`.
 - **`info` is a per-channel term** of the pipeline, set by `open/3` or `derive/2`, not meant for per-call
   data. There is no `set_info/2`.

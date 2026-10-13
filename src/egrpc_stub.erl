@@ -22,8 +22,8 @@
     host/1,
     port/1,
     codec/1,
-    stream_interceptors/1,
-    unary_interceptors/1
+    interceptor_chain/1,
+    interceptor_states/1
 ]).
 
 -export([
@@ -51,7 +51,6 @@
 
     unary_interceptor/0,
     unary_interceptor_ret/0,
-    stream_interceptor/0,
     next/0,
 
     streaming_ret/0,
@@ -69,8 +68,11 @@
 
 %% What a call goes through, as opposed to the connection. `derive/2' replaces it.
 -record(pipeline, {
-    unary_interceptors = [] :: [unary_interceptor()],
-    stream_interceptors = [] :: [{stream_interceptor(), State :: any()}],
+    interceptors = [] :: [egrpc_interceptor:item()],
+    %% The initial state of the interceptors, by position.
+    states = #{} :: egrpc_interceptor:states(),
+    %% The hooks of the interceptors, composed when the pipeline is built.
+    chain :: egrpc_stream:chain(),
     info :: term()
 }).
 
@@ -93,8 +95,7 @@
 
 -type conn_opts() :: #{
     gun_opts => gun:opts(),
-    unary_interceptors => [unary_interceptor()],
-    stream_interceptors => [stream_interceptor() | {stream_interceptor(), any()}],
+    interceptors => [egrpc_interceptor:spec()],
     retry => non_neg_integer(),
     info => term()
 }.
@@ -102,12 +103,13 @@
 %% The options of `open/3' which `derive/2' accepts: the ones of the pipeline, not of the
 %% connection.
 -type pipeline_opts() :: #{
-    unary_interceptors => [unary_interceptor()],
-    stream_interceptors => [stream_interceptor() | {stream_interceptor(), any()}],
+    interceptors => [egrpc_interceptor:spec()],
     info => term()
 }.
 
--define(PIPELINE_OPTS, [unary_interceptors, stream_interceptors, info]).
+-define(PIPELINE_OPTS, [interceptors, info]).
+%% The options of 0.1.x which were replaced by `interceptors'.
+-define(REMOVED_OPTS, [unary_interceptors, stream_interceptors]).
 
 -type next() :: fun((egrpc:stream(), request(), opts()) -> unary_interceptor_ret()).
 -type unary_interceptor() ::
@@ -115,8 +117,6 @@
 -type unary_interceptor_ret() :: {ok, response()} | {error, egrpc_error:grpc_error() | any()}.
 -type request() :: map().
 -type response() :: map().
-
--type stream_interceptor() :: module().
 
 -type unary_ret(Res) :: {ok, Res} | {error, any()}.
 -type client_streaming_ret() :: streaming_ret().
@@ -143,7 +143,8 @@ open(Host, Port, Opts0) ->
     GunOpts0 = maps:get(gun_opts, Opts0, #{}),
     GunOpts = maps:merge(#{retry => 0, protocols => [http2]}, GunOpts0),
 
-    Pipeline = maps:fold(fun set_pipeline_opt/3, #pipeline{}, maps:with(?PIPELINE_OPTS, Opts0)),
+    ok = check_removed_opts(Opts0),
+    Pipeline = maps:fold(fun set_pipeline_opt/3, new_pipeline(), maps:with(?PIPELINE_OPTS, Opts0)),
 
     maybe
         {ok, ConnPid} ?= gun:open(Host, Port, GunOpts),
@@ -162,18 +163,23 @@ open(Host, Port, Opts0) ->
 %%
 %% The keys of `Opts' are the options of `open/3' which belong to the pipeline. A key which is
 %% present replaces the corresponding setting, a key which is absent keeps it. Clearing is
-%% explicit, for example `unary_interceptors => []'.
+%% explicit, for example `interceptors => []'.
 %%
-%% No connection is opened. The streaming interceptors of `Opts' are initialized for the derived
-%% channel, their state is independent of the original.
+%% No connection is opened. The interceptors of `Opts' are initialized for the derived channel,
+%% their state is independent of the original.
 %%
 %% An option which is not an option of the pipeline, such as `gun_opts' or `retry', raises
-%% `error({invalid_option, Key})'.
+%% `error({invalid_option, Key})'. The options `unary_interceptors' and `stream_interceptors' of
+%% 0.1.x raise `error({removed_option, Key})', as they do in `open/3'.
+%%
+%% An interceptor which is neither a `fun/4' nor a module which implements
+%% `m:egrpc_interceptor' raises `error({invalid_interceptor, Spec})'.
 %%
 %% The derived channel can not close the connection: `close/1,2' on it raises
 %% `error(not_closable)'. Whoever called `open/3' keeps the original channel and closes it.
 -spec derive(channel(), pipeline_opts()) -> channel().
 derive(#channel{pipeline = Pipeline0} = Channel, Opts) when is_map(Opts) ->
+    ok = check_removed_opts(Opts),
     case lists:sort([K || K <- maps:keys(Opts), not lists:member(K, ?PIPELINE_OPTS)]) of
         [] -> ok;
         [Key | _] -> error({invalid_option, Key})
@@ -181,27 +187,24 @@ derive(#channel{pipeline = Pipeline0} = Channel, Opts) when is_map(Opts) ->
     Pipeline = maps:fold(fun set_pipeline_opt/3, Pipeline0, Opts),
     Channel#channel{pipeline = Pipeline, closable = false}.
 
-set_pipeline_opt(unary_interceptors, Interceptors, Pipeline) ->
-    Pipeline#pipeline{unary_interceptors = Interceptors};
-set_pipeline_opt(stream_interceptors, Interceptors, Pipeline) ->
-    Pipeline#pipeline{stream_interceptors = init_stream_interceptors(Interceptors)};
+new_pipeline() ->
+    #pipeline{chain = egrpc_stream:build_chain([])}.
+
+set_pipeline_opt(interceptors, Specs, Pipeline) ->
+    {Items, States} = egrpc_interceptor:load(Specs),
+    Pipeline#pipeline{
+        interceptors = Items,
+        states = States,
+        chain = egrpc_stream:build_chain(Items)
+    };
 set_pipeline_opt(info, Info, Pipeline) ->
     Pipeline#pipeline{info = Info}.
 
-init_stream_interceptors(Interceptors0) ->
-    Interceptors1 = lists:filtermap(
-        fun ({I, InitOpts}) when is_atom(I) -> {true, {I, InitOpts}};
-            (I) when is_atom(I) ->
-                case egrpc_stream_interceptor:is_behaviour_impl(I) of
-                    true -> {true, {I, []}};
-                    false -> false
-                end;
-            (_) ->  false
-        end, Interceptors0),
-    lists:map(
-       fun({I, InitOpts}) when is_atom(I) ->
-           egrpc_stream_interceptor:init(I, InitOpts)
-       end, Interceptors1).
+check_removed_opts(Opts) ->
+    case [K || K <- ?REMOVED_OPTS, maps:is_key(K, Opts)] of
+        [] -> ok;
+        [Key | _] -> error({removed_option, Key})
+    end.
 
 %% @doc Await until the channel is up.
 -spec await_up(channel()) -> {ok, channel()} | {error, any()}.
@@ -233,9 +236,11 @@ conn_pid(Stream) -> conn_pid(egrpc_stream:channel(Stream)).
 %% @doc Get the codec module from the channel.
 codec(#channel{codec = Codec}) -> Codec.
 
-stream_interceptors(#channel{pipeline = #pipeline{stream_interceptors = I}}) -> I.
+%% @private
+interceptor_chain(#channel{pipeline = #pipeline{chain = Chain}}) -> Chain.
 
-unary_interceptors(#channel{pipeline = #pipeline{unary_interceptors = I}}) -> I.
+%% @private
+interceptor_states(#channel{pipeline = #pipeline{states = States}}) -> States.
 
 %% @doc Get the host from the channel.
 -spec host(channel()) -> string().
@@ -304,28 +309,27 @@ test_channel() ->
     #channel{
         conn = #conn{host = "h", port = 1, conn_pid = self()},
         codec = egrpc_proto,
-        pipeline = #pipeline{info = a}
+        pipeline = (new_pipeline())#pipeline{info = a}
     }.
 
 derive_test() ->
     Ch = test_channel(),
     Fun = fun(_Stream, _Req, _Opts, _Next) -> ok end,
-    D = derive(Ch, #{unary_interceptors => [Fun], info => b}),
+    D = derive(Ch, #{interceptors => [Fun], info => b}),
     %% the connection is shared
     ?assertEqual(conn_pid(Ch), conn_pid(D)),
     ?assertEqual({host(Ch), port(Ch)}, {host(D), port(D)}),
-    ?assertEqual([Fun], unary_interceptors(D)),
     ?assertEqual(b, info(D)),
+    ?assertMatch(#channel{pipeline = #pipeline{interceptors = [{'fun', Fun}]}}, D),
     %% the original is not changed
-    ?assertEqual([], unary_interceptors(Ch)),
+    ?assertMatch(#channel{pipeline = #pipeline{interceptors = []}}, Ch),
     ?assertEqual(a, info(Ch)),
     %% a key which is absent keeps the setting, a key which is present replaces it
     D2 = derive(D, #{info => c}),
-    ?assertEqual([Fun], unary_interceptors(D2)),
+    ?assertMatch(#channel{pipeline = #pipeline{interceptors = [{'fun', Fun}]}}, D2),
     ?assertEqual(c, info(D2)),
-    D3 = derive(D2, #{unary_interceptors => [], stream_interceptors => []}),
-    ?assertEqual([], unary_interceptors(D3)),
-    ?assertEqual([], stream_interceptors(D3)),
+    D3 = derive(D2, #{interceptors => []}),
+    ?assertMatch(#channel{pipeline = #pipeline{interceptors = []}}, D3),
     ?assertEqual(c, info(D3)),
     ?assertEqual(x, info(derive(Ch, #{info => undefined}), x)).
 
@@ -333,7 +337,15 @@ derive_invalid_option_test() ->
     Ch = test_channel(),
     ?assertError({invalid_option, gun_opts}, derive(Ch, #{gun_opts => #{}})),
     ?assertError({invalid_option, retry}, derive(Ch, #{retry => 1, info => x})),
-    ?assertError({invalid_option, foo}, derive(Ch, #{foo => bar})).
+    ?assertError({invalid_option, foo}, derive(Ch, #{foo => bar})),
+    ?assertError({removed_option, unary_interceptors}, derive(Ch, #{unary_interceptors => []})),
+    ?assertError({removed_option, stream_interceptors}, derive(Ch, #{stream_interceptors => []})),
+    ?assertError({invalid_interceptor, 42}, derive(Ch, #{interceptors => [42]})),
+    ?assertError({invalid_interceptors, foo}, derive(Ch, #{interceptors => foo})).
+
+open_removed_option_test() ->
+    ?assertError({removed_option, unary_interceptors}, open("h", 1, #{unary_interceptors => []})),
+    ?assertError({removed_option, stream_interceptors}, open("h", 1, #{stream_interceptors => []})).
 
 close_not_closable_test() ->
     D = derive(test_channel(), #{}),

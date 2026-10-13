@@ -1,3 +1,4 @@
+%% @doc One call: its headers, encoding, the interceptors and the messages.
 -module(egrpc_stream).
 
 -feature(maybe_expr, enable).
@@ -16,6 +17,8 @@
     set_info/2
 ]).
 
+-export([build_chain/1]).
+
 -export([
     unary/3,
     server_streaming/3,
@@ -33,9 +36,13 @@
     cancel_stream/1
 ]).
 
--export_type([stream/0]).
+-export_type([stream/0, chain/0]).
 
--record(stream_interceptor_chain, {
+%% The interceptors of a pipeline, composed once when the pipeline is built. Each hook is the
+%% composition of the hooks of the interceptors which implement it, around the function which
+%% does the work. `unary' is the list of the wraps of unary calls, the outermost first.
+-record(chain, {
+    unary :: [fun((unary_next()) -> unary_next())],
     init_req :: init_req(),
     send_msg :: send_msg(),
     close_send :: close_send(),
@@ -47,21 +54,25 @@
 -record(stream, {
     channel :: egrpc_stub:channel(),
     grpc :: egrpc:grpc(),
-    headers = [] :: [{binary(), binary()}],
     stream_ref :: undefined | gun:stream_ref(),
     encoding = identity :: identity | gzip,
     encoder :: fun((any()) -> binary()),
     decoder :: fun((binary()) -> any()),
-    stream_interceptor_chain :: #stream_interceptor_chain{} | undefined,
-    stream_interceptor_states = #{} :: map(),
+    chain :: #chain{},
+    %% The state of every interceptor, by its position in the list.
+    states = #{} :: egrpc_interceptor:states(),
     info :: term()
 }).
 
 -type stream() :: #stream{}.
+-type chain() :: #chain{}.
 
--type init_req() :: fun((stream(), Opts :: map()) -> stream()).
--type send_msg() :: fun((stream(), Request :: map(), IsFin :: fin | nofin) -> stream()).
--type close_send() :: fun((stream()) -> stream()).
+-type unary_next() :: fun((stream(), map(), egrpc_stub:opts()) -> egrpc_stub:unary_interceptor_ret()).
+
+-type init_req() :: fun((stream(), Opts :: map()) -> {ok, stream()} | {error, any()}).
+-type send_msg() :: fun((stream(), Request :: map(), IsFin :: fin | nofin) ->
+    {ok, stream()} | {error, any()}).
+-type close_send() :: fun((stream()) -> {ok, stream()} | {error, any()}).
 -type recv_header() ::
     fun((stream(), Timeout :: timeout()) -> {ok, stream()} | {error, any()}).
 -type recv_msg() ::
@@ -79,18 +90,16 @@
 }).
 
 -spec new(egrpc_stub:channel(), egrpc:grpc()) -> stream().
-new(Channel, #{rpc_def := RpcDef} = Grpc) ->
+new(Channel, #{rpc_def := _} = Grpc) ->
     Codec = egrpc_stub:codec(Channel),
     {Encoder, Decoder} = egrpc_codec:init(Codec, Grpc),
-    StreamInterceptors = egrpc_stub:stream_interceptors(Channel),
-    {InterceptorChain, InterceptorStates} = init_stream_interceptors(RpcDef, StreamInterceptors),
     #stream{
         channel = Channel,
         grpc = Grpc,
         encoder = Encoder,
         decoder = Decoder,
-        stream_interceptor_chain = InterceptorChain,
-        stream_interceptor_states = InterceptorStates
+        chain = egrpc_stub:interceptor_chain(Channel),
+        states = egrpc_stub:interceptor_states(Channel)
     }.
 
 new_from_stream(#stream{channel = Channel, grpc = Grpc} = _Stream) ->
@@ -125,40 +134,41 @@ grpc_method(#stream{grpc = #{rpc_def := #{name := Method}}}) -> Method.
 -spec grpc_service(stream()) -> atom().
 grpc_service(#stream{grpc = #{service_name := Service}}) -> Service.
 
-unary(#stream{} = Stream0, Request0, Opts0) ->
+%%--------------------------------------------------------------------
+%% Calls
+
+unary(#stream{chain = #chain{unary = Wraps}} = Stream0, Request0, Opts0) ->
     Next0 =
         fun(#stream{} = Stream1, Req, Opts) ->
-            Stream2 = init_req(Stream1, Opts),
-            Stream3 = send_msg(Stream2, Req, fin),
-            recv_response(Stream3, 5000)
+            maybe
+                {ok, Stream2} ?= init_req(Stream1, Opts),
+                {ok, Stream3} ?= send_msg(Stream2, Req, fin),
+                recv_response(Stream3, 5000)
+            end
         end,
-
-    F = lists:foldl(
-        fun(Interceptor, Next) when is_function(Interceptor, 4) ->
-            fun(Stream1, Req, Opts) -> Interceptor(Stream1, Req, Opts, Next) end
-        end, Next0, egrpc_stub:unary_interceptors(Stream0#stream.channel)
-    ),
-
-    % eqwalizer:ignore
+    %% The first interceptor is the outermost.
+    F = lists:foldr(fun(Wrap, Next) -> Wrap(Next) end, Next0, Wraps),
     F(Stream0, Request0, Opts0).
 
-server_streaming(#stream{} = Stream0, Request, Opts0) ->
-    Stream = init_req(Stream0, Opts0),
-    send_msg(Stream, Request, fin),
-    {ok, Stream}.
+server_streaming(#stream{} = Stream0, Request, Opts) ->
+    maybe
+        {ok, Stream1} ?= init_req(Stream0, Opts),
+        {ok, Stream2} ?= send_msg(Stream1, Request, fin),
+        {ok, Stream2}
+    end.
 
-client_streaming(#stream{} = Stream0, Opts) ->
-    Stream = init_req(Stream0, Opts),
-    {ok, Stream}.
+client_streaming(#stream{} = Stream, Opts) ->
+    init_req(Stream, Opts).
 
-bidi_streaming(#stream{} = Stream0, Opts) ->
-    Stream = init_req(Stream0, Opts),
-    {ok, Stream}.
+bidi_streaming(#stream{} = Stream, Opts) ->
+    init_req(Stream, Opts).
 
-init_req(#stream{stream_interceptor_chain = undefined} = Stream, Opts) ->
-    init_req0(Stream, Opts);
-init_req(#stream{stream_interceptor_chain = I} = Stream, Opts) ->
-    (I#stream_interceptor_chain.init_req)(Stream, Opts).
+%%--------------------------------------------------------------------
+%% The phases of a call. The public ones go through the hooks of the interceptors, `*0' is what
+%% is at the end of the hooks.
+
+init_req(#stream{chain = #chain{init_req = F}} = Stream, Opts) ->
+    F(Stream, Opts).
 
 init_req0(#stream{channel = Channel, grpc = #{path := Path}} = Stream, Opts) ->
     ConnPid = egrpc_stub:conn_pid(Channel),
@@ -169,20 +179,28 @@ init_req0(#stream{channel = Channel, grpc = #{path := Path}} = Stream, Opts) ->
     ),
     Headers = maps:merge(CustomMetadata0, ?DEFAULT_HEADERS),
     SRef = gun:post(ConnPid, Path, Headers),
-    Stream#stream{stream_ref = SRef}.
+    {ok, Stream#stream{stream_ref = SRef}}.
 
--spec send_msg(stream(), map(), fin | nofin) -> stream().
-send_msg(#stream{stream_interceptor_chain = undefined} = Stream, Request, IsFin) ->
-    send_msg0(Stream, Request, IsFin);
-send_msg(#stream{stream_interceptor_chain = I} = Stream, Request, IsFin) ->
-    (I#stream_interceptor_chain.send_msg)(Stream, Request, IsFin).
+-spec send_msg(stream(), map(), fin | nofin) -> {ok, stream()} | {error, any()}.
+send_msg(#stream{chain = #chain{send_msg = F}} = Stream, Request, IsFin) ->
+    F(Stream, Request, IsFin).
 
 send_msg0(#stream{encoder = Encoder, stream_ref = SRef} = Stream, Request, IsFin) ->
     EncodedReq = Encoder(Request),
     EncodedBody = egrpc_grpc:encode(identity, EncodedReq),
     ConnPid = egrpc_stub:conn_pid(Stream#stream.channel),
     gun:data(ConnPid, SRef, IsFin, EncodedBody),
-    Stream.
+    {ok, Stream}.
+
+-spec close_send(stream()) -> {ok, stream()} | {error, any()}.
+close_send(#stream{chain = #chain{close_send = F}} = Stream) ->
+    F(Stream).
+
+close_send0(#stream{stream_ref = SRef} = Stream) when SRef =/= undefined ->
+    gun:data(egrpc_stub:conn_pid(Stream#stream.channel), SRef, fin, <<>>),
+    {ok, Stream};
+close_send0(#stream{} = Stream) ->
+    {ok, Stream}.
 
 recv_streaming_fin(#stream{} = Stream, Timeout) ->
     ConnPid = egrpc_stub:conn_pid(Stream#stream.channel),
@@ -193,10 +211,8 @@ recv_streaming_fin(#stream{} = Stream, Timeout) ->
     end.
 
 -spec recv_header(stream(), timeout()) -> {ok, stream()} | {error, any()}.
-recv_header(#stream{stream_interceptor_chain = undefined} = Stream, Timeout) ->
-    recv_header0(Stream, Timeout);
-recv_header(#stream{stream_interceptor_chain = I} = Stream, Timeout) ->
-    (I#stream_interceptor_chain.recv_header)(Stream, Timeout).
+recv_header(#stream{chain = #chain{recv_header = F}} = Stream, Timeout) ->
+    F(Stream, Timeout).
 
 recv_header0(#stream{channel = Channel, stream_ref = SRef} = Stream, Timeout) ->
     ConnPid = egrpc_stub:conn_pid(Channel),
@@ -213,11 +229,9 @@ recv_header0(#stream{channel = Channel, stream_ref = SRef} = Stream, Timeout) ->
     end.
 
 -spec recv_msg(stream(), timeout(), binary()) -> Result when
-    Result :: {ok, stream(), map(), binary()} | {error, any()} | more.
-recv_msg(#stream{stream_interceptor_chain = undefined} = Stream, Timeout, Buf) ->
-    recv_msg0(Stream, Timeout, Buf);
-recv_msg(#stream{stream_interceptor_chain = I} = Stream, Timeout, Buf) ->
-    (I#stream_interceptor_chain.recv_msg)(Stream, Timeout, Buf).
+    Result :: {ok, stream(), map(), binary()} | {error, any()}.
+recv_msg(#stream{chain = #chain{recv_msg = F}} = Stream, Timeout, Buf) ->
+    F(Stream, Timeout, Buf).
 
 recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) ->
     ConnPid = egrpc_stub:conn_pid(Stream#stream.channel),
@@ -246,7 +260,6 @@ recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) 
                     %% Error receiving data, return the error.
                     Error
             end
-
     end.
 
 -spec recv_response(stream(), timeout()) -> {ok, map()} | {error, any()}.
@@ -272,11 +285,10 @@ recv_one_msg(#stream{} = Stream, Timeout) ->
             Other
     end.
 
--spec parse_msg(stream(), binary()) -> {ok, stream(), map(), binary()} | more | {error, any()}.
-parse_msg(#stream{stream_interceptor_chain = undefined} = _Stream0, _Buf0) ->
-    error(invalid_stream);
-parse_msg(#stream{stream_interceptor_chain = I} = Stream0, Buf0) ->
-    (I#stream_interceptor_chain.parse_msg)(Stream0, Buf0).
+-spec parse_msg(stream(), binary()) ->
+    {ok, stream(), map(), binary()} | more | {error, any()}.
+parse_msg(#stream{chain = #chain{parse_msg = F}} = Stream, Buf) ->
+    F(Stream, Buf).
 
 parse_msg0(#stream{decoder = Decoder, encoding = Encoding} = Stream, Buf) ->
     case egrpc_grpc:decode(Encoding, Decoder, Buf) of
@@ -284,138 +296,123 @@ parse_msg0(#stream{decoder = Decoder, encoding = Encoding} = Stream, Buf) ->
         Other -> Other
     end.
 
--spec close_send(stream()) -> stream().
-close_send(#stream{stream_interceptor_chain = undefined} = _Stream) ->
-    error(invalid_stream);
-close_send(#stream{stream_interceptor_chain = I} = Stream) ->
-    (I#stream_interceptor_chain.close_send)(Stream).
-
-init_stream_interceptors(#{input_stream := false, output_stream := false}, _) ->
-    {undefined, #{}};
-init_stream_interceptors(_RpcDef, Interceptors0) ->
-    Interceptors = [I || {I, _} <- Interceptors0],
-
-    InitReq0 = fun(Stream, Opts) -> init_req0(Stream, Opts) end,
-    InitReq = lists:foldl(
-        fun(I, Next) when is_atom(I) ->
-            case egrpc_stream_interceptor:is_impl(I, init_req, 4) of
-                true ->
-                    fun(Stream, Opts) ->
-                        State = get_interceptor_state(Stream, I),
-                        {Stream1, State1} = I:init_req(Stream, Opts, Next, State),
-                        set_interceptor_state(Stream1, State1, I)
-                    end;
-                false -> Next
-            end
-        end, InitReq0, Interceptors),
-
-    Send0 = fun(Stream, Req, IsFin) -> send_msg0(Stream, Req, IsFin) end,
-    SendMsg = lists:foldl(
-        fun(I, Next) when is_atom(I) ->
-            case egrpc_stream_interceptor:is_impl(I, send_msg, 5) of
-                true -> fun(Stream, Req, IsFin) ->
-                            State = get_interceptor_state(Stream, I),
-                            {Stream1, State1} = I:send_msg(Stream, Req, IsFin, Next, State),
-                            set_interceptor_state(Stream1, State1, I)
-                        end;
-                false -> Next
-            end
-        end, Send0, Interceptors),
-
-    CloseSend0 =
-        fun(#stream{stream_ref = SRef} = Stream) when SRef =/= undefined ->
-            gun:data(egrpc_stub:conn_pid(Stream#stream.channel), SRef, fin, <<>>),
-            Stream;
-           (#stream{} = Stream) -> Stream
-        end,
-    CloseSend = lists:foldl(
-        fun(I, Next) when is_atom(I) ->
-            case egrpc_stream_interceptor:is_impl(I, close_send, 3) of
-                true -> fun(Stream) ->
-                            State = get_interceptor_state(Stream, I),
-                            {Stream1, State1} = I:close_send(Stream, Next, State),
-                            set_interceptor_state(Stream1, State1, I)
-                        end;
-                false -> Next
-            end
-        end, CloseSend0, Interceptors),
-
-    RecvHeader0 = fun(Stream, Timeout) -> recv_header0(Stream, Timeout) end,
-    RecvHeader = lists:foldl(
-        fun(I, Next) when is_atom(I) ->
-            case egrpc_stream_interceptor:is_impl(I, recv_header, 4) of
-                true -> fun(Stream, Timeout) ->
-                            State = get_interceptor_state(Stream, I),
-                            case I:recv_header(Stream, Timeout, Next, State) of
-                                {ok, {Stream1, State1}} ->
-                                    State2 = set_interceptor_state(Stream1, State1, I),
-                                    {ok, State2};
-                                {error, _} = Error -> Error
-                            end
-                        end;
-                false -> Next
-            end
-        end, RecvHeader0, Interceptors),
-
-    Recv0 = fun(Stream, Timeout, Buf) -> recv_msg0(Stream, Timeout, Buf) end,
-    RecvMsg = lists:foldl(
-        fun(I, Next) when is_atom(I) ->
-            case egrpc_stream_interceptor:is_impl(I, recv_msg, 5) of
-                true -> fun(Stream, Timeout, Buf) ->
-                            State = get_interceptor_state(Stream, I),
-                            case I:recv_msg(Stream, Timeout, Buf, Next, State) of
-                                {ok, {Stream1, State1}, Response, Rest} ->
-                                    Stream2 = set_interceptor_state(Stream1, State1, I),
-                                    {ok, Stream2, Response, Rest};
-                                {error, _} = Error -> Error
-                            end
-                        end;
-                false -> Next
-            end
-        end, Recv0, Interceptors),
-
-    Parse0 = fun(Stream, Buf) -> parse_msg0(Stream, Buf) end,
-    Parse = lists:foldl(
-        fun(I, Next) when is_atom(I) ->
-            case egrpc_stream_interceptor:is_impl(I, parse_msg, 4) of
-                true -> fun(Stream, Buf) ->
-                            State = get_interceptor_state(Stream, I),
-                            case I:parse_msg(Stream, Buf, Next, State) of
-                                {ok, {Stream1, State1}, Response1, Rest} ->
-                                    State2 = set_interceptor_state(Stream1, State1, I),
-                                    {ok, State2, Response1, Rest};
-                                Other -> Other
-                            end
-                        end;
-                false -> Next
-            end
-        end, Parse0, Interceptors),
-
-    States = maps:from_list(Interceptors0),
-    Chain = #stream_interceptor_chain{
-        %% eqwalizer:ignore
-        init_req = InitReq,
-        %% eqwalizer:ignore
-        send_msg = SendMsg,
-        %% eqwalizer:ignore
-        close_send = CloseSend,
-        %% eqwalizer:ignore
-        recv_header = RecvHeader,
-        %% eqwalizer:ignore
-        recv_msg = RecvMsg,
-        %% eqwalizer:ignore
-        parse_msg = Parse
-    },
-    {Chain, States}.
-
-set_interceptor_state(#stream{stream_interceptor_states = States} = Stream, State, Interceptor) ->
-    Stream#stream{stream_interceptor_states = States#{Interceptor => State}}.
-
-get_interceptor_state(#stream{stream_interceptor_states = States}, Interceptor) ->
-    maps:get(Interceptor, States).
-
 -spec cancel_stream(stream()) -> ok.
 cancel_stream(#stream{stream_ref = SRef} = Stream) when SRef =/= undefined ->
     gun:cancel(egrpc_stub:conn_pid(Stream#stream.channel), SRef);
 cancel_stream(#stream{} = _Stream) ->
     ok.
+
+%%--------------------------------------------------------------------
+%% The chain of the interceptors
+
+%% @private
+%% @doc Compose the hooks of the interceptors, which came from `egrpc_interceptor:load/1'.
+-spec build_chain([egrpc_interceptor:item()]) -> chain().
+build_chain(Items) ->
+    Indexed = lists:zip(lists:seq(1, length(Items)), Items),
+    Modules = [{Idx, M} || {Idx, {module, M}} <- Indexed],
+    Impl = fun(Function, Arity) ->
+        [{Idx, M} || {Idx, M} <- Modules, egrpc_interceptor:is_impl(M, Function, Arity)]
+    end,
+    #chain{
+        unary = [
+            unary_wrap(Idx, Item)
+         || {Idx, Item} <- Indexed,
+            case Item of
+                {'fun', _} -> true;
+                {module, M} -> egrpc_interceptor:is_impl(M, unary, 5)
+            end
+        ],
+        init_req = compose([wrap_init_req(I, M) || {I, M} <- Impl(init_req, 4)], fun init_req0/2),
+        send_msg = compose([wrap_send_msg(I, M) || {I, M} <- Impl(send_msg, 5)], fun send_msg0/3),
+        close_send = compose([wrap_close_send(I, M) || {I, M} <- Impl(close_send, 3)],
+                             fun close_send0/1),
+        recv_header = compose([wrap_recv_header(I, M) || {I, M} <- Impl(recv_header, 4)],
+                              fun recv_header0/2),
+        recv_msg = compose([wrap_recv_msg(I, M) || {I, M} <- Impl(recv_msg, 5)],
+                           fun recv_msg0/3),
+        parse_msg = compose([wrap_parse_msg(I, M) || {I, M} <- Impl(parse_msg, 4)],
+                            fun parse_msg0/2)
+    }.
+
+%% The first wrap is the outermost.
+compose(Wraps, Base) ->
+    lists:foldr(fun(Wrap, Next) -> Wrap(Next) end, Base, Wraps).
+
+state(#stream{states = States}, Idx) -> maps:get(Idx, States, undefined).
+
+put_state(#stream{states = States} = Stream, Idx, State) ->
+    Stream#stream{states = States#{Idx => State}}.
+
+unary_wrap(_Idx, {'fun', Fun}) ->
+    fun(Next) -> fun(Stream, Req, Opts) -> Fun(Stream, Req, Opts, Next) end end;
+unary_wrap(Idx, {module, M}) ->
+    fun(Next) ->
+        fun(Stream, Req, Opts) -> M:unary(Stream, Req, Opts, Next, state(Stream, Idx)) end
+    end.
+
+wrap_init_req(Idx, M) ->
+    fun(Next) ->
+        fun(Stream, Opts) ->
+            case M:init_req(Stream, Opts, Next, state(Stream, Idx)) of
+                {ok, {Stream1, State}} -> {ok, put_state(Stream1, Idx, State)};
+                {error, _} = Error -> Error
+            end
+        end
+    end.
+
+wrap_send_msg(Idx, M) ->
+    fun(Next) ->
+        fun(Stream, Req, IsFin) ->
+            case M:send_msg(Stream, Req, IsFin, Next, state(Stream, Idx)) of
+                {ok, {Stream1, State}} -> {ok, put_state(Stream1, Idx, State)};
+                {error, _} = Error -> Error
+            end
+        end
+    end.
+
+wrap_close_send(Idx, M) ->
+    fun(Next) ->
+        fun(Stream) ->
+            case M:close_send(Stream, Next, state(Stream, Idx)) of
+                {ok, {Stream1, State}} -> {ok, put_state(Stream1, Idx, State)};
+                {error, _} = Error -> Error
+            end
+        end
+    end.
+
+wrap_recv_header(Idx, M) ->
+    fun(Next) ->
+        fun(Stream, Timeout) ->
+            case M:recv_header(Stream, Timeout, Next, state(Stream, Idx)) of
+                {ok, {Stream1, State}} -> {ok, put_state(Stream1, Idx, State)};
+                {error, _} = Error -> Error
+            end
+        end
+    end.
+
+wrap_recv_msg(Idx, M) ->
+    fun(Next) ->
+        fun(Stream, Timeout, Buf) ->
+            case M:recv_msg(Stream, Timeout, Buf, Next, state(Stream, Idx)) of
+                {ok, {Stream1, State}, Resp, Rest} ->
+                    {ok, put_state(Stream1, Idx, State), Resp, Rest};
+                {error, _} = Error ->
+                    Error
+            end
+        end
+    end.
+
+wrap_parse_msg(Idx, M) ->
+    fun(Next) ->
+        fun(Stream, Buf) ->
+            case M:parse_msg(Stream, Buf, Next, state(Stream, Idx)) of
+                {ok, {Stream1, State}, Resp, Rest} ->
+                    {ok, put_state(Stream1, Idx, State), Resp, Rest};
+                more ->
+                    more;
+                {error, _} = Error ->
+                    Error
+            end
+        end
+    end.

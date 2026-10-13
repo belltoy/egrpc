@@ -68,12 +68,12 @@ derive_shares_the_connection(Config) ->
 derive_pipeline_is_independent(Config) ->
     {ok, Original0} = egrpc_stub:open(
         "localhost", egrpc_fake_server:port(?config(server, Config)),
-        #{unary_interceptors => [tell(original)]}
+        #{interceptors => [tell(original)]}
     ),
     {ok, Original} = egrpc_stub:await_up(Original0),
     try
-        D = egrpc_stub:derive(Original, #{unary_interceptors => [tell(derived)]}),
-        Bare = egrpc_stub:derive(Original, #{unary_interceptors => []}),
+        D = egrpc_stub:derive(Original, #{interceptors => [tell(derived)]}),
+        Bare = egrpc_stub:derive(Original, #{interceptors => []}),
         ?assertMatch({ok, _}, ?CHECK(Original)),
         ?assertEqual([original], called()),
         ?assertMatch({ok, _}, ?CHECK(D)),
