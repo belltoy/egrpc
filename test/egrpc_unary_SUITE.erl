@@ -17,6 +17,7 @@
     unsupported_compression/1,
     invalid_compressed_flag/1,
     end_stream_on_data/1,
+    data_after_message/1,
     connection_closed/1,
     timeout/1,
     leftover_after_status/1,
@@ -36,6 +37,7 @@ all() ->
         unsupported_compression,
         invalid_compressed_flag,
         end_stream_on_data,
+        data_after_message,
         connection_closed,
         timeout,
         leftover_after_status,
@@ -150,6 +152,19 @@ end_stream_on_data(_Config) ->
         {error, {grpc_error, internal, <<"Received END_STREAM flag in response data frame">>}},
         ?CHECK(Ch, #{})
     ),
+    done(Srv).
+
+%% More than one message in a unary response.
+data_after_message(_Config) ->
+    Frame = egrpc_fake_server:frame(egrpc_test_util:health_response('SERVING')),
+    Actions = [
+        {headers, [{<<"content-type">>, <<"application/grpc">>}]},
+        {data, <<Frame/binary, "extra">>},
+        {trailers, [{<<"grpc-status">>, <<"0">>}]}
+    ],
+    Srv = {_, Ch} = serve(Actions),
+    ?assertEqual({error, {grpc_error, internal, <<"Unexpected data after the response message">>}},
+                 ?CHECK(Ch, #{})),
     done(Srv).
 
 connection_closed(_Config) ->

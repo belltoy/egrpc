@@ -128,9 +128,9 @@ grpc_service(#stream{grpc = #{service_name := Service}}) -> Service.
 unary(#stream{} = Stream0, Request0, Opts0) ->
     Next0 =
         fun(#stream{} = Stream1, Req, Opts) ->
-            Stream = init_req(Stream1, Opts),
-            send_msg(Stream, Req, fin),
-            recv_response(Stream, 5000)
+            Stream2 = init_req(Stream1, Opts),
+            Stream3 = send_msg(Stream2, Req, fin),
+            recv_response(Stream3, 5000)
         end,
 
     F = lists:foldl(
@@ -253,16 +253,23 @@ recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) 
 recv_response(#stream{} = Stream, Timeout) ->
     maybe
         {ok, Stream1} ?= recv_header(Stream, Timeout),
-        %% NOTE: when `Rest' is not `<<>>', the pattern does not match and, through the `else'
-        %% clause below, `{ok, Stream, Resp, Rest}' is returned as the result of the call,
-        %% which does not conform to this function's spec. By reading the code (not verified
-        %% by running). It should be an explicit error.
-        {ok, Stream2, Resp, <<>>} ?= recv_msg(Stream1, Timeout, <<>>),
+        {ok, Stream2, Resp} ?= recv_one_msg(Stream1, Timeout),
         {ok, Trailers} ?= recv_streaming_fin(Stream2, Timeout),
         ok ?= egrpc_error:from_grpc_status(Trailers),
         {ok, Resp}
     else
         E -> E
+    end.
+
+%% A unary response is one message, more data in the buffer is a protocol violation.
+recv_one_msg(#stream{} = Stream, Timeout) ->
+    case recv_msg(Stream, Timeout, <<>>) of
+        {ok, Stream1, Resp, <<>>} ->
+            {ok, Stream1, Resp};
+        {ok, _Stream, _Resp, _Rest} ->
+            {error, {grpc_error, internal, <<"Unexpected data after the response message">>}};
+        Other ->
+            Other
     end.
 
 -spec parse_msg(stream(), binary()) -> {ok, stream(), map(), binary()} | more | {error, any()}.
