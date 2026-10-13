@@ -1,8 +1,8 @@
 # egrpc refactoring plan
 
 Status: the design below was agreed in discussion, nothing is implemented yet. Section 8 lists the
-decisions; there are no open questions at the moment. The stream cleanup rules of 4.5 still have to be
-verified by running (phase 0).
+decisions; there are no open questions at the moment. Phase 0 (tests) is done for the layers 1 to 3,
+see "Phase 0 status"; the premises of the stream cleanup rules of 4.5 were verified by running.
 
 This is a **breaking change**. Backward compatibility with 0.1.x is explicitly not a goal: old options
 are removed, not deprecated.
@@ -322,9 +322,18 @@ is not handled when the error was found locally.
 Local decode errors are reported as `INTERNAL` (the separate fix `fix: report response decode
 failures as INTERNAL`), as the gRPC status code table requires for a client.
 
-**To verify by running, not only by reading the gun source:** that `gun:cancel` on a stream which gun
-has already deleted makes gun send a `gun_error` to the caller; that `gun:flush(StreamRef)` leaves no
-message of the stream in the mailbox after each kind of failure; and the race described above.
+**Verified by running** (`test/egrpc_gun_SUITE.erl`, gun 2.x, against the fake server):
+
+- `gun:cancel` on a stream which has finished makes gun send
+  `{gun_error, Conn, StreamRef, {badstate, "The stream cannot be found."}}` to the caller.
+- `gun:cancel` followed by `gun:flush(StreamRef)` on a live stream: nothing of the stream is delivered
+  afterwards, the late response of the server does not reach the mailbox (observed for 2.5 s).
+- `gun:flush(StreamRef)` removes the unread messages of a stream (the three messages of a complete
+  response).
+
+**Not verified:** the race described above, between `cancel` being processed by gun and the frames
+which were already forwarded, and the behaviour after each kind of failure through egrpc itself
+(that is the change of phase 1; the `leftover_*` tests of `egrpc_unary_SUITE` record today's behaviour).
 
 ### 4.6 Decided not to do
 
@@ -401,6 +410,31 @@ server group needs only cowboy.
 The characterization tests should only pin down what survives the refactoring: encoding and decoding,
 framing, error mapping and the transport behaviour of a unary call. The old interceptor behaviour is
 replaced and is not worth pinning.
+
+#### Phase 0 status
+
+Layers 1, 2 and 3 are in place (`rebar3 eunit`: 9 tests, `rebar3 ct`: 23 tests, all passing on the
+code of 0.1.2 plus the `INTERNAL` fix). Layer 4 (etcd) is not written.
+
+What running them showed:
+
+- cowboy 2.12.0 serves HTTP/2 over plain TCP when `protocols => [http2]` (prior knowledge), and gun
+  and egrpc connect to it without any TLS. cowboy sends trailers only to a request which has
+  `te: trailers`. cowboy 2.13.0 can not be fetched with rebar3 3.25.1 (`Dep ranch has invalid
+  version`), so 2.12.0 is pinned.
+- GripMock (`bavix/gripmock`, v3.23.3 when tried) interoperates with egrpc for all four kinds of RPC,
+  status errors (`output.error` and `output.code`), request header matching (`headers.equals`),
+  response delay (`output.delay`), server streams (`output.stream`), client streams (`inputs`) and
+  bidirectional streams (every incoming message is matched on its own with `input`, `contains` is a
+  subset match, not a substring match).
+- The end of a streaming call can be read from gun only, as described in 2.4.
+- **`egrpc_json` does not work:** the generated `to_json/2` returns a map, not text, so the encoder
+  returns a map where a binary is needed. It is noted in the module and not fixed here.
+- The local-error cases (decode failure, unsupported compression, invalid compressed flag, data frame
+  with `END_STREAM`) are reported as `INTERNAL` by the fix of `egrpc_grpc`; a `END_STREAM` on the
+  data frame of a complete message is an error even though the message is whole.
+- Today, after a decode failure the trailers are left in the mailbox, and after a timeout the late
+  response reaches it (`leftover_after_decode_failure`, `leftover_after_timeout`).
 
 ### Phase 1 acceptance
 

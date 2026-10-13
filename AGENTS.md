@@ -36,14 +36,31 @@ versions:
 |---|---|
 | `mise exec -- rebar3 compile` | Build |
 | `mise exec -- rebar3 eunit` | Run the inline eunit tests (`-ifdef(TEST)` in the modules) |
+| `mise exec -- rebar3 ct` | Run the Common Test suites in `test/` (see Tests below) |
 | `mise exec -- rebar3 fmt -w` | Format with erlfmt |
 | `mise exec -- rebar3 dialyzer` | Static analysis |
 | `mise exec -- rebar3 xref` | Cross reference |
 | `mise exec -- rebar3 ex_doc` | Generate docs into `doc/` (git-ignored) |
 | `mise exec -- elp lint --module <mod> --include-erlc-diagnostics --experimental --read-config` | Lint one module |
 
-There is no `test/` directory yet. Tests are inline in the modules, for example in `egrpc_error.erl`.
-Adding a test infrastructure is phase 0 of [REFACTOR.md](REFACTOR.md).
+### Tests
+
+| Layer | Where | Run with |
+|---|---|---|
+| eunit, pure logic | inline in the modules (`-ifdef(TEST)`), for example `egrpc_error.erl`, `egrpc_grpc.erl` | `rebar3 eunit` |
+| Common Test, fake server | `test/egrpc_unary_SUITE.erl`, `test/egrpc_gun_SUITE.erl`; the server is `test/egrpc_fake_server.erl` (cowboy, h2c) which sends exactly the bytes a test asks for | `rebar3 ct` |
+| Common Test, GripMock | `test/egrpc_gripmock_SUITE.erl`; starts the docker image `bavix/gripmock`, skipped when docker or the image is missing, or set `EGRPC_GRIPMOCK_ADDR=Host:GrpcPort:HttpPort` | `rebar3 ct` |
+
+- `rebar3 ct --suite test/egrpc_unary_SUITE` runs one suite. The timeout cases wait for the real
+  timeouts, a full run takes about half a minute.
+- cowboy is a dependency of the `test` profile only, pinned to 2.12.0: with 2.13.0 rebar3 3.25.1 fails
+  with `Dep ranch has invalid version`.
+- `test/egrpc_test_echo_pb.erl` is generated from `test/egrpc_gripmock_SUITE_data/echo.proto`, the
+  command is in the header of the suite. It is the only generated file outside `src/` and is committed.
+- The suites named `leftover_*` in `egrpc_unary_SUITE` record what is left in the caller's mailbox
+  today, which [REFACTOR.md](REFACTOR.md) (4.5) changes: flip their assertions together with that
+  change.
+- The test infrastructure is phase 0 of [REFACTOR.md](REFACTOR.md).
 
 ## Architecture
 
