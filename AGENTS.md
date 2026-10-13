@@ -68,7 +68,7 @@ versions:
 | Module | Role |
 |---|---|
 | `egrpc` | Public types only (`channel()`, `stream()`, `grpc()`, ...) |
-| `egrpc_stub` | Channel: `open/3`, `await_up/1`, `close/1,2`, `info/1,2`, `set_info/2`, and the `unary/4` and streaming entry points used by generated clients |
+| `egrpc_stub` | Channel: `open/3`, `derive/2`, `await_up/1`, `close/1,2`, `info/1,2`, and the `unary/4` and streaming entry points used by generated clients |
 | `egrpc_stream` | One call: headers, encoding, interceptor chains, `send_msg`, `recv_*`, `parse_msg`, `cancel_stream` |
 | `egrpc_stream_interceptor` | Behaviour of streaming interceptors (6 optional hooks) |
 | `egrpc_codec`, `src/codec/*` | Codec behaviour and implementations: `egrpc_proto`, `egrpc_json`, `egrpc_erlpack` |
@@ -77,7 +77,8 @@ versions:
 | `egrpc_app`, `egrpc_sup` | Application callback and an empty supervisor, egrpc does not run processes of its own |
 
 A channel is a plain record owned by the caller, not a process. The `gun` connection pid lives inside
-it.
+it, in a `conn` part which derived channels share; the `pipeline` part (interceptors, `info`) is what
+`derive/2` replaces.
 
 ## Gotchas
 
@@ -92,7 +93,10 @@ it.
 - **Streaming interceptors:** modules implementing `egrpc_stream_interceptor`. Invalid elements are
   silently dropped by `open/3`.
 - **The unary response timeout is hard-coded** to 5000 ms in `egrpc_stream:unary/3`.
-- **`info` is a per-channel term** stored in the connection options, not meant for per-call data.
+- **`info` is a per-channel term** of the pipeline, set by `open/3` or `derive/2`, not meant for per-call
+  data. There is no `set_info/2`.
+- **A derived channel can not be closed:** `derive/2` returns a channel which shares the connection, and
+  `close/1,2` on it raises `not_closable`. Keep the channel which `open/3` returned.
 - **`maybe` expressions are used**, with `-feature(maybe_expr, enable)` in the modules.
 - **Keep the versions in sync** when preparing a release: `vsn` in `src/egrpc.app.src` and the
   dependency snippet in `README.md`. egrpc does not send a `user-agent` header.

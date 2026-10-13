@@ -18,7 +18,6 @@
 -export([
     info/1,
     info/2,
-    set_info/2,
     conn_pid/1,
     host/1,
     port/1,
@@ -29,6 +28,7 @@
 
 -export([
     open/3,
+    derive/2,
     await_up/1,
     close/1,
     close/2
@@ -43,6 +43,7 @@
 
 -export_type([
     conn_opts/0,
+    pipeline_opts/0,
     opts/0,
     metadata/0,
     channel/0,
@@ -59,16 +60,27 @@
     bidi_streaming_ret/0
 ]).
 
--record(channel, {
+%% The connection: what `close/1,2' acts on, and what derived channels share.
+-record(conn, {
     host :: string(),
     port :: inet:port_number(),
-    codec :: module(),
+    conn_pid :: pid()
+}).
+
+%% What a call goes through, as opposed to the connection. `derive/2' replaces it.
+-record(pipeline, {
     unary_interceptors = [] :: [unary_interceptor()],
     stream_interceptors = [] :: [{stream_interceptor(), State :: any()}],
-    % compressor = undefined :: undefined | module(),
-    conn_pid :: pid(),
-    headers = [] :: [{binary(), binary()}],
-    opts :: conn_opts()
+    info :: term()
+}).
+
+%% `closable' is true for the channel which `open/3' returned, and false for the channels which
+%% `derive/2' returned: they share the connection of the original and must not close it.
+-record(channel, {
+    conn :: #conn{},
+    codec :: module(),
+    pipeline :: #pipeline{},
+    closable = true :: boolean()
 }).
 
 -type channel() :: #channel{}.
@@ -86,6 +98,16 @@
     retry => non_neg_integer(),
     info => term()
 }.
+
+%% The options of `open/3' which `derive/2' accepts: the ones of the pipeline, not of the
+%% connection.
+-type pipeline_opts() :: #{
+    unary_interceptors => [unary_interceptor()],
+    stream_interceptors => [stream_interceptor() | {stream_interceptor(), any()}],
+    info => term()
+}.
+
+-define(PIPELINE_OPTS, [unary_interceptors, stream_interceptors, info]).
 
 -type next() :: fun((egrpc:stream(), request(), opts()) -> unary_interceptor_ret()).
 -type unary_interceptor() ::
@@ -105,7 +127,7 @@
 %% @doc Open a gRPC channel to the given Host and Port with options.
 %%
 %% The `info' option in `Opts' can be used to store arbitrary
-%% information associated with the channel.
+%% information associated with the channel, `derive/2' can replace it.
 %%
 %% The calling process becomes the owner of the gun connection: the connection is closed when
 %% the owner exits, and `gun_up'/`gun_down' messages are delivered to it.
@@ -121,10 +143,53 @@ open(Host, Port, Opts0) ->
     GunOpts0 = maps:get(gun_opts, Opts0, #{}),
     GunOpts = maps:merge(#{retry => 0, protocols => [http2]}, GunOpts0),
 
-    UnaryInterceptors = maps:get(unary_interceptors, Opts0, []),
+    Pipeline = maps:fold(fun set_pipeline_opt/3, #pipeline{}, maps:with(?PIPELINE_OPTS, Opts0)),
 
-    StreamInterceptors0 = maps:get(stream_interceptors, Opts0, []),
-    StreamInterceptors1 = lists:filtermap(
+    maybe
+        {ok, ConnPid} ?= gun:open(Host, Port, GunOpts),
+        Channel = #channel{
+            conn = #conn{host = Host, port = Port, conn_pid = ConnPid},
+            codec = egrpc_proto,
+            pipeline = Pipeline,
+            closable = true
+        },
+        {ok, Channel}
+    else
+        E -> E
+    end.
+
+%% @doc Return a channel which shares the connection of `Channel' and has a different pipeline.
+%%
+%% The keys of `Opts' are the options of `open/3' which belong to the pipeline. A key which is
+%% present replaces the corresponding setting, a key which is absent keeps it. Clearing is
+%% explicit, for example `unary_interceptors => []'.
+%%
+%% No connection is opened. The streaming interceptors of `Opts' are initialized for the derived
+%% channel, their state is independent of the original.
+%%
+%% An option which is not an option of the pipeline, such as `gun_opts' or `retry', raises
+%% `error({invalid_option, Key})'.
+%%
+%% The derived channel can not close the connection: `close/1,2' on it raises
+%% `error(not_closable)'. Whoever called `open/3' keeps the original channel and closes it.
+-spec derive(channel(), pipeline_opts()) -> channel().
+derive(#channel{pipeline = Pipeline0} = Channel, Opts) when is_map(Opts) ->
+    case lists:sort([K || K <- maps:keys(Opts), not lists:member(K, ?PIPELINE_OPTS)]) of
+        [] -> ok;
+        [Key | _] -> error({invalid_option, Key})
+    end,
+    Pipeline = maps:fold(fun set_pipeline_opt/3, Pipeline0, Opts),
+    Channel#channel{pipeline = Pipeline, closable = false}.
+
+set_pipeline_opt(unary_interceptors, Interceptors, Pipeline) ->
+    Pipeline#pipeline{unary_interceptors = Interceptors};
+set_pipeline_opt(stream_interceptors, Interceptors, Pipeline) ->
+    Pipeline#pipeline{stream_interceptors = init_stream_interceptors(Interceptors)};
+set_pipeline_opt(info, Info, Pipeline) ->
+    Pipeline#pipeline{info = Info}.
+
+init_stream_interceptors(Interceptors0) ->
+    Interceptors1 = lists:filtermap(
         fun ({I, InitOpts}) when is_atom(I) -> {true, {I, InitOpts}};
             (I) when is_atom(I) ->
                 case egrpc_stream_interceptor:is_behaviour_impl(I) of
@@ -132,33 +197,15 @@ open(Host, Port, Opts0) ->
                     false -> false
                 end;
             (_) ->  false
-        end, StreamInterceptors0),
-    StreamInterceptors = lists:map(
+        end, Interceptors0),
+    lists:map(
        fun({I, InitOpts}) when is_atom(I) ->
            egrpc_stream_interceptor:init(I, InitOpts)
-       end, StreamInterceptors1),
-
-    maybe
-        {ok, ConnPid} ?= gun:open(Host, Port, GunOpts),
-        Codec = egrpc_proto,
-        Channel = #channel{
-            host = Host,
-            port = Port,
-            codec = Codec,
-            unary_interceptors = UnaryInterceptors,
-            % eqwalizer:ignore
-            stream_interceptors = StreamInterceptors,
-            conn_pid = ConnPid,
-            opts = Opts0
-        },
-        {ok, Channel}
-    else
-        E -> E
-    end.
+       end, Interceptors1).
 
 %% @doc Await until the channel is up.
 -spec await_up(channel()) -> {ok, channel()} | {error, any()}.
-await_up(#channel{conn_pid = Pid} = Channel) ->
+await_up(#channel{conn = #conn{conn_pid = Pid}} = Channel) ->
     case gun:await_up(Pid) of
         {ok, http2} ->
             {ok, Channel};
@@ -175,34 +222,28 @@ info(#channel{} = Channel) -> info(Channel, undefined).
 
 %% @doc Get the `info' associated with the channel, or return Default if not set.
 -spec info(channel(), Default) -> any() | Default.
-info(#channel{opts = Opts}, Default) ->
-    maps:get(info, Opts, Default).
-
-%% @doc Set the `info' associated with the channel.
--spec set_info(channel(), Info :: any()) -> channel().
-set_info(#channel{opts = Opts} = Channel, Info) ->
-    Opts1 = Opts#{info => Info},
-    Channel#channel{opts = Opts1}.
+info(#channel{pipeline = #pipeline{info = undefined}}, Default) -> Default;
+info(#channel{pipeline = #pipeline{info = Info}}, _Default) -> Info.
 
 %% @doc Get the connection pid from the channel or stream.
 -spec conn_pid(egrpc:stream() | channel()) -> pid().
-conn_pid(#channel{conn_pid = ConnPid}) -> ConnPid;
+conn_pid(#channel{conn = #conn{conn_pid = ConnPid}}) -> ConnPid;
 conn_pid(Stream) -> conn_pid(egrpc_stream:channel(Stream)).
 
 %% @doc Get the codec module from the channel.
 codec(#channel{codec = Codec}) -> Codec.
 
-stream_interceptors(#channel{stream_interceptors = StreamInterceptors}) -> StreamInterceptors.
+stream_interceptors(#channel{pipeline = #pipeline{stream_interceptors = I}}) -> I.
 
-unary_interceptors(#channel{unary_interceptors = UnaryInterceptors}) -> UnaryInterceptors.
+unary_interceptors(#channel{pipeline = #pipeline{unary_interceptors = I}}) -> I.
 
 %% @doc Get the host from the channel.
 -spec host(channel()) -> string().
-host(#channel{host = Host}) -> Host.
+host(#channel{conn = #conn{host = Host}}) -> Host.
 
 %% @doc Get the port from the channel.
 -spec port(channel()) -> inet:port_number().
-port(#channel{port = Port}) -> Port.
+port(#channel{conn = #conn{port = Port}}) -> Port.
 
 %% @doc Close the gRPC channel.
 %% By default, it performs a graceful shutdown.
@@ -212,10 +253,15 @@ close(Channel) -> close(Channel, false).
 
 %% @doc Close the gRPC channel.
 %% If Force is `true', it performs an immediate close.
+%%
+%% Only the channel which `open/3' returned can be closed, a channel which `derive/2' returned
+%% raises `error(not_closable)', because it shares the connection with others.
 -spec close(channel(), Force :: boolean()) -> ok.
-close(#channel{conn_pid = ConnPid}, false) ->
+close(#channel{closable = false}, _Force) ->
+    error(not_closable);
+close(#channel{conn = #conn{conn_pid = ConnPid}}, false) ->
     gun:shutdown(ConnPid);
-close(#channel{conn_pid = ConnPid}, true) ->
+close(#channel{conn = #conn{conn_pid = ConnPid}}, true) ->
     gun:close(ConnPid).
 
 %% @doc Make a unary RPC call.
@@ -249,3 +295,50 @@ server_streaming(Channel, Request, Grpc, Opts0) ->
     Grpc :: egrpc:grpc().
 bidi_streaming(Channel, Grpc, Opts0) ->
     egrpc_stream:bidi_streaming(egrpc_stream:new(Channel, Grpc), Opts0).
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+%% A channel without a gun connection, `derive/2' and the getters do not need one.
+test_channel() ->
+    #channel{
+        conn = #conn{host = "h", port = 1, conn_pid = self()},
+        codec = egrpc_proto,
+        pipeline = #pipeline{info = a}
+    }.
+
+derive_test() ->
+    Ch = test_channel(),
+    Fun = fun(_Stream, _Req, _Opts, _Next) -> ok end,
+    D = derive(Ch, #{unary_interceptors => [Fun], info => b}),
+    %% the connection is shared
+    ?assertEqual(conn_pid(Ch), conn_pid(D)),
+    ?assertEqual({host(Ch), port(Ch)}, {host(D), port(D)}),
+    ?assertEqual([Fun], unary_interceptors(D)),
+    ?assertEqual(b, info(D)),
+    %% the original is not changed
+    ?assertEqual([], unary_interceptors(Ch)),
+    ?assertEqual(a, info(Ch)),
+    %% a key which is absent keeps the setting, a key which is present replaces it
+    D2 = derive(D, #{info => c}),
+    ?assertEqual([Fun], unary_interceptors(D2)),
+    ?assertEqual(c, info(D2)),
+    D3 = derive(D2, #{unary_interceptors => [], stream_interceptors => []}),
+    ?assertEqual([], unary_interceptors(D3)),
+    ?assertEqual([], stream_interceptors(D3)),
+    ?assertEqual(c, info(D3)),
+    ?assertEqual(x, info(derive(Ch, #{info => undefined}), x)).
+
+derive_invalid_option_test() ->
+    Ch = test_channel(),
+    ?assertError({invalid_option, gun_opts}, derive(Ch, #{gun_opts => #{}})),
+    ?assertError({invalid_option, retry}, derive(Ch, #{retry => 1, info => x})),
+    ?assertError({invalid_option, foo}, derive(Ch, #{foo => bar})).
+
+close_not_closable_test() ->
+    D = derive(test_channel(), #{}),
+    ?assertError(not_closable, close(D)),
+    ?assertError(not_closable, close(D, true)),
+    %% still not closable when derived again
+    ?assertError(not_closable, close(derive(D, #{info => x}))).
+-endif.
