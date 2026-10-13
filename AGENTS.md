@@ -76,9 +76,8 @@ it.
 - **The unary response timeout is hard-coded** to 5000 ms in `egrpc_stream:unary/3`.
 - **`info` is a per-channel term** stored in the connection options, not meant for per-call data.
 - **`maybe` expressions are used**, with `-feature(maybe_expr, enable)` in the modules.
-- **Keep the versions in sync** when preparing a release: `vsn` in `src/egrpc.app.src`, the dependency
-  snippet in `README.md`, and `?DEFAULT_USER_AGENT` in `include/egrpc.hrl`. They are currently not
-  consistent with each other.
+- **Keep the versions in sync** when preparing a release: `vsn` in `src/egrpc.app.src` and the
+  dependency snippet in `README.md`. egrpc does not send a `user-agent` header.
 - **`.elp_lint.toml` uses the old key names** (`enabled_lints`/`disabled_lints`). elp otp-27 rejected
   the same format in etcdgun with `unknown field enabled_lints`, so it is probably not applied here.
   `W0038` (old edoc syntax) is intentionally disabled, do not "fix" it.

@@ -21,7 +21,7 @@ Add `egrpc` as dependency in your `rebar.config` file:
 
 ```erlang
 {deps, [
-    {egrpc, "0.1.1"}
+    {egrpc, "0.1.2"}
 ]}.
 ```
 

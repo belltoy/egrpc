@@ -1,8 +1,6 @@
 -ifndef(EGRPC_HRL).
 -define(EGRPC_HRL, true).
 
--define(DEFAULT_USER_AGENT, <<"grpc-erlang-egrpc/0.1.0">>).
-
 %% Grpc status code
 -define(GRPC_STATUS_OK,                  0).
 -define(GRPC_STATUS_CANCELED,            1).
