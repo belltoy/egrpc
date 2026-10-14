@@ -7,6 +7,8 @@
     stream/0,
     grpc/0,
     rpc_def/0,
+    method_meta/0,
+    idempotency/0,
     grpc_type/0,
     grpc_error/0
 ]).
@@ -35,3 +37,17 @@
     output_stream := boolean(),
     opts := list()
 }.
+
+%% An element of the list returned by `methods/0' of the generated clients.
+-type method_meta() :: #{
+    name := atom(),
+    function := atom(),
+    path := binary(),
+    grpc_type := grpc_type(),
+    input := atom(),
+    output := atom(),
+    idempotency := idempotency()
+}.
+
+%% From the `idempotency_level' method option of the proto.
+-type idempotency() :: unknown | no_side_effects | idempotent.
