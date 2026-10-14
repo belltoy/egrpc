@@ -1,7 +1,10 @@
 words = [
+    "Cobertura",
     "Creds",
     "bavix",
     "bidi",
+    "coverdata",
+    "covertool",
     "egrpc",
     "eqwalizer",
     "erlpack",
