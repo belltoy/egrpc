@@ -84,7 +84,7 @@ versions:
 | `egrpc_grpc` | gRPC message framing |
 | `egrpc_error` | `grpc-status` to `{grpc_error, Name, Message}` mapping; `class/1` |
 | `egrpc_client` | A named client: `start/2`, `stop/1,2`, `set_targets/2`, `targets/1`, `await_ready/2`, and what the name path of `egrpc_stub` calls (`unary/4` with the retries, the streaming calls); one process for each client, which only keeps the pools of the targets in line with the targets |
-| `egrpc_pool` | One process for each target: owns the `pool_size` gun connections of it (it is their owner), reconnects them with backoff, writes the row of the target in `egrpc_rows`, owns the `counters` of it |
+| `egrpc_pool` | One process for each target: owns the `pool_size` gun connections of it (it is their owner), reconnects them with backoff, writes the row of the target in `egrpc_rows`, owns the `atomics` of it |
 | `egrpc_balancer` | The order in which the targets are tried (`order/3`), which of them may be used for a call (`eligible/3`), and the behaviour of a balancer module (`pick/3`); `pick_first` and `round_robin` are in `egrpc_client` |
 | `egrpc_registry` | Owns the tables `egrpc_clients` (the desired state), `egrpc_index` (the targets, the round robin, the channel with the pipeline, the balancer and the retry options of a client) and `egrpc_rows` (one row for each target); removes what is left of a client whose supervisor is gone |
 | `egrpc_clients_sup`, `egrpc_client_sup`, `egrpc_pool_sup` | The supervisors, see below |
@@ -95,7 +95,7 @@ it, in a `conn` part which derived channels share; the `pipeline` part (intercep
 `derive/2` replaces.
 
 A client is not a channel. The calls of a client are made in the calling process: the target
-and the connection are picked from ETS rows and `counters`, no process is on the path of a call.
+and the connection are picked from ETS rows and `atomics`, no process is on the path of a call.
 The processes only keep the connections and the rows up to date.
 
 ```
@@ -158,7 +158,7 @@ supervisor, and it reads its targets from `egrpc_clients` when it starts.
   (5000 ms), then closes the connections.
 - **The registry entry of a client holds its desired state** (options and targets). `set_targets/2`
   writes it before it applies it, and a restarted `egrpc_client` reads it. The snapshot rows and the
-  `counters` are the observed state and are rebuilt.
+  `atomics` are the observed state and are rebuilt.
 - **Retries are made in `egrpc_client:unary/4`, not in an interceptor**, only with the `retry`
   option of the client. The reason: the
   channel is picked before the interceptors run and `Next` of an interceptor can not pick another
@@ -169,8 +169,10 @@ supervisor, and it reads its targets from `egrpc_clients` when it starts.
   `opts` of `rpc_def` in the `Grpc` map (`'IDEMPOTENT'`, `'NO_SIDE_EFFECTS'`, or not set). gpb puts it
   there, the plugin does not have to.
 - **`excluded`** is in the call `Opts`, a list of target ids which the balancer must not pick.
-- **`counters` of a target:** `inflight` for each connection (unary calls, in `try ... after` in
-  the name path) and a state bit for each connection, `goaway`, which a caller sets when it saw
+- **`atomics` of a target:** `inflight` for each connection (unary calls, in `try ... after` in
+  the name path; the place is reserved with `add_get` and given back when it is over the limit, so
+  the limit of the peer holds for unary calls, and the retry tokens are updated with
+  `compare_exchange`, there is no get then put) and a state bit for each connection, `goaway`, which a caller sets when it saw
   `goaway` or `closing` and `pick` skips. Streams are not counted. Do not make the owner of a stream a counted
   object without reading section 10 of `REFACTOR.md`.
 - **The maximum number of concurrent streams of the peer** is read from

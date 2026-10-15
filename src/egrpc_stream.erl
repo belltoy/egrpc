@@ -213,10 +213,10 @@ note({error, {stream_error, {goaway, _, _}}}, Channel) -> mark_draining(Channel)
 note({error, {stream_error, closing}}, Channel) -> mark_draining(Channel);
 note(_, _Channel) -> ok.
 
-%% The flag of the connection in the `counters' of the target of a client, see `egrpc_pool'.
+%% The flag of the connection in the `atomics' of the target of a client, see `egrpc_pool'.
 mark_draining(Channel) ->
     case egrpc_stub:counters_ref(Channel) of
-        {Counters, _InflightSlot, FlagSlot} -> counters:put(Counters, FlagSlot, 1);
+        {Counters, _InflightSlot, FlagSlot} -> atomics:put(Counters, FlagSlot, 1);
         undefined -> ok
     end.
 

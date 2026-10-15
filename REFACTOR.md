@@ -600,16 +600,16 @@ egrpc_sup (rest_for_one)
 - The state is split into the *desired* state, which only the application knows, and the *observed*
   state. The desired state (the options and the targets) is in `egrpc_clients`, `set_targets/2`
   writes it before it applies it, and a restarted `egrpc_client` reads it. The observed state (which
-  connections are up, the `counters`) is written by the pools and rebuilt when they restart.
+  connections are up, the `atomics`) is written by the pools and rebuilt when they restart.
 - `egrpc_pool` is the owner of the gun connections of its target, so `gun_up`, `gun_down` and the
   settings notification come to it. A pool which crashes is restarted alone. The pools are before the
   client in its supervisor, so a client which crashes does not touch the connections.
 - The tables are public and are read in the process of the caller: `egrpc_index` has one row for a
   client (the ids of the targets, an `atomics` for the round robin, the channel which has the
   pipeline, the balancer and the retry options), `egrpc_rows` has one row for each target (its
-  attrs, host, port, the `counters` and the connections which are up with the number of concurrent
+  attrs, host, port, the `atomics` and the connections which are up with the number of concurrent
   streams the server allows). Nothing is kept in `persistent_term`.
-- The `counters` of a target have, for the connection `Idx` of `Size`: the calls in flight at `Idx`,
+- The `atomics` of a target have, for the connection `Idx` of `Size`: the calls in flight at `Idx`,
   a flag at `Size + Idx` which is set when a call saw `goaway` or `closing` on the connection and
   cleared when it is up again, and at `2 * Size + 1` the tokens of the retries in thousandths.
 

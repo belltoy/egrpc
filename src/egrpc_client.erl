@@ -12,7 +12,7 @@
 %%
 %% The name is given to the generated clients and to `m:egrpc_stub' where a channel goes. The call
 %% is made in the process of the caller: the target and the connection are chosen from `ets' and
-%% `counters', and no process is on the path of a call.
+%% `atomics', and no process is on the path of a call.
 %%
 %% Options of `start/2':
 %% - `targets': `[#{id := term(), host := string(), port := inet:port_number(), attrs => map()}]';
@@ -310,20 +310,29 @@ wait(N, #{initial_backoff := Initial, max_backoff := Max, multiplier := Mult}, O
             end
     end.
 
-%% The tokens of the retries of a target are in thousandths in its counters.
+%% The tokens of the retries of a target are in thousandths in its atomics.
 budget_success(_Target, undefined) ->
     ok;
-budget_success({_Id, Counters, Size}, #{budget := #{max_tokens := Max, token_ratio := Ratio}}) ->
-    Slot = 2 * Size + 1,
-    New = min(Max * 1000, counters:get(Counters, Slot) + round(Ratio * 1000)),
-    counters:put(Counters, Slot, New).
+budget_success({_Id, Atomics, Size}, #{budget := #{max_tokens := Max, token_ratio := Ratio}}) ->
+    Inc = round(Ratio * 1000),
+    _ = update(Atomics, 2 * Size + 1, fun(V) -> min(Max * 1000, V + Inc) end),
+    ok.
 
 %% Take a token for a failure, and tell whether the target has enough left for a retry.
-budget_failure({_Id, Counters, Size}, #{budget := #{max_tokens := Max}}) ->
-    Slot = 2 * Size + 1,
-    New = max(0, counters:get(Counters, Slot) - 1000),
-    ok = counters:put(Counters, Slot, New),
+budget_failure({_Id, Atomics, Size}, #{budget := #{max_tokens := Max}}) ->
+    New = update(Atomics, 2 * Size + 1, fun(V) -> max(0, V - 1000) end),
     New > Max * 1000 div 2.
+
+%% Compare and swap loop: concurrent callers do not lose each other's updates. Returns the new value.
+update(Atomics, Slot, Fun) ->
+    update(Atomics, Slot, Fun, atomics:get(Atomics, Slot)).
+
+update(Atomics, Slot, Fun, Old) ->
+    New = Fun(Old),
+    case atomics:compare_exchange(Atomics, Slot, Old, New) of
+        ok -> New;
+        Actual -> update(Atomics, Slot, Fun, Actual)
+    end.
 
 %% @private
 server_streaming(Name, Request, Grpc, Opts) ->
@@ -346,19 +355,17 @@ bidi_streaming(Name, Grpc, Opts) ->
         {error, _} = Error -> Error
     end.
 
-%% Choose a connection for a call. For a unary call (`Count') the call in flight is counted
-%% in the `counters' of the target until `release/1'. A stream is not counted.
+%% Choose a connection for a call. For a unary call (`Count') a place of the connection is
+%% reserved in the `atomics' of the target, atomically with the check of the limit, until
+%% `release/1'. A stream is not counted.
 checkout(Name, Opts, Count) ->
     case ets:lookup(egrpc_index, Name) of
-        [{_, Ids, Atomics, Template, Balancer, _Retry}] ->
-            case pick(Name, Ids, Atomics, Balancer, Opts) of
+        [{_, Ids, RoundRobin, Template, Balancer, _Retry}] ->
+            case pick(Name, Ids, RoundRobin, Balancer, Opts, Count) of
                 {ok, Id, Host, Port, Pid, Counters, Idx, Size} ->
                     Release = case Count of
-                        true ->
-                            ok = counters:add(Counters, Idx, 1),
-                            {Counters, Idx};
-                        false ->
-                            undefined
+                        true -> {Counters, Idx};
+                        false -> undefined
                     end,
                     Ref = {Counters, Idx, Size + Idx},
                     {ok, egrpc_stub:attach(Template, Host, Port, Pid, Ref), Release,
@@ -374,12 +381,12 @@ checkout(Name, Opts, Count) ->
     end.
 
 release(undefined) -> ok;
-release({Counters, Idx}) -> counters:sub(Counters, Idx, 1).
+release({Counters, Idx}) -> atomics:sub(Counters, Idx, 1).
 
-pick(_Name, Ids, _Atomics, _Balancer, _Opts) when tuple_size(Ids) =:= 0 ->
+pick(_Name, Ids, _RoundRobin, _Balancer, _Opts, _Count) when tuple_size(Ids) =:= 0 ->
     {error, {no_connection_available, no_targets}};
-pick(Name, Ids, Atomics, {Module, BalancerOpts}, Opts) when is_atom(Module) ->
-    Start = atomics:add_get(Atomics, 1, 1) - 1,
+pick(Name, Ids, RoundRobin, {Module, BalancerOpts}, Opts, Count) when is_atom(Module) ->
+    Start = atomics:add_get(RoundRobin, 1, 1) - 1,
     Order = egrpc_balancer:order(round_robin, Ids, Start),
     Candidates = [
         #{id => Id, attrs => Attrs, conns => length(Conns)}
@@ -392,33 +399,33 @@ pick(Name, Ids, Atomics, {Module, BalancerOpts}, Opts) when is_atom(Module) ->
             {error, {no_connection_available, no_ready}};
         _ ->
             case Module:pick(BalancerOpts, Opts, Candidates) of
-                {ok, Id} -> choose_target(Name, Id);
+                {ok, Id} -> choose_target(Name, Id, Count);
                 {error, Reason} -> {error, {no_connection_available, Reason}}
             end
     end;
-pick(Name, Ids, Atomics, Strategy, Opts) ->
-    Start = atomics:add_get(Atomics, 1, 1) - 1,
-    try_targets(egrpc_balancer:order(Strategy, Ids, Start), Name, Opts, false).
+pick(Name, Ids, RoundRobin, Strategy, Opts, Count) ->
+    Start = atomics:add_get(RoundRobin, 1, 1) - 1,
+    try_targets(egrpc_balancer:order(Strategy, Ids, Start), Name, Opts, false, Count).
 
-try_targets([], _Name, _Opts, true) ->
+try_targets([], _Name, _Opts, true, _Count) ->
     {error, {no_connection_available, no_ready}};
-try_targets([], _Name, _Opts, false) ->
+try_targets([], _Name, _Opts, false, _Count) ->
     {error, {no_connection_available, all_excluded}};
-try_targets([Id | Ids], Name, Opts, Considered) ->
+try_targets([Id | Ids], Name, Opts, Considered, Count) ->
     case ets:lookup(egrpc_rows, {Name, Id}) of
         [{_, Attrs, Host, Port, Size, Counters, Conns}] ->
             case egrpc_balancer:eligible(Id, Attrs, Opts) of
                 false ->
-                    try_targets(Ids, Name, Opts, Considered);
+                    try_targets(Ids, Name, Opts, Considered, Count);
                 true ->
-                    case choose_conn(Counters, Size, Conns) of
+                    case choose_conn(Counters, Size, Conns, Count) of
                         {Idx, Pid} -> {ok, Id, Host, Port, Pid, Counters, Idx, Size};
-                        none -> try_targets(Ids, Name, Opts, true)
+                        none -> try_targets(Ids, Name, Opts, true, Count)
                     end
             end;
         [] ->
             %% the pool has not written its row yet, or is being restarted
-            try_targets(Ids, Name, Opts, true)
+            try_targets(Ids, Name, Opts, true, Count)
     end.
 
 %% The attrs and the connections which can take a call of a target which may be used for it.
@@ -433,10 +440,10 @@ candidate(Name, Id, Opts) ->
             {#{}, []}
     end.
 
-choose_target(Name, Id) ->
+choose_target(Name, Id, Count) ->
     case ets:lookup(egrpc_rows, {Name, Id}) of
         [{_, _Attrs, Host, Port, Size, Counters, Conns}] ->
-            case choose_conn(Counters, Size, Conns) of
+            case choose_conn(Counters, Size, Conns, Count) of
                 {Idx, Pid} -> {ok, Id, Host, Port, Pid, Counters, Idx, Size};
                 none -> {error, {no_connection_available, no_ready}}
             end;
@@ -445,9 +452,51 @@ choose_target(Name, Id) ->
     end.
 
 %% The connection with the fewest calls in flight of those which are not draining and have not
-%% reached the number of concurrent streams of the server.
-choose_conn(Counters, Size, Conns) ->
+%% reached the number of concurrent streams of the server. With `Count' the place is reserved:
+%% the least busy first, the next one when another caller took the last place meanwhile.
+choose_conn(Counters, Size, Conns, true) ->
+    case choose_conn(Counters, Size, Conns, none, infinity) of
+        none ->
+            none;
+        {Idx, _Pid} = Best ->
+            {_, _, Max} = lists:keyfind(Idx, 1, Conns),
+            case reserve(Counters, Idx, Max) of
+                true -> Best;
+                false -> reserve_first(Counters, Size, Conns, Idx)
+            end
+    end;
+choose_conn(Counters, Size, Conns, false) ->
     choose_conn(Counters, Size, Conns, none, infinity).
+
+%% The least busy connection was taken meanwhile: the others, the least busy first.
+reserve_first(Counters, Size, Conns, TakenIdx) ->
+    Sorted = lists:sort([
+        {atomics:get(Counters, Idx), Idx, Pid, Max}
+        || {Idx, Pid, Max} <- Conns, Idx =/= TakenIdx, atomics:get(Counters, Size + Idx) =:= 0
+    ]),
+    reserve_in_order(Counters, Sorted).
+
+reserve_in_order(_Counters, []) ->
+    none;
+reserve_in_order(Counters, [{_, Idx, Pid, Max} | Rest]) ->
+    case reserve(Counters, Idx, Max) of
+        true -> {Idx, Pid};
+        false -> reserve_in_order(Counters, Rest)
+    end.
+
+%% Increment first, then check: the check is on the value this caller got, so the limit holds
+%% however many callers are at it. A caller which is over the limit gives its place back.
+reserve(Counters, Idx, infinity) ->
+    ok = atomics:add(Counters, Idx, 1),
+    true;
+reserve(Counters, Idx, Max) ->
+    case atomics:add_get(Counters, Idx, 1) =< Max of
+        true ->
+            true;
+        false ->
+            ok = atomics:sub(Counters, Idx, 1),
+            false
+    end.
 
 choose_conn(_Counters, _Size, [], Best, _BestInflight) ->
     Best;
@@ -456,7 +505,7 @@ choose_conn(Counters, Size, [{Idx, Pid, _Max} = C | Rest], Best, BestInflight) -
         false ->
             choose_conn(Counters, Size, Rest, Best, BestInflight);
         true ->
-            Inflight = counters:get(Counters, Idx),
+            Inflight = atomics:get(Counters, Idx),
             case Inflight < BestInflight of
                 true -> choose_conn(Counters, Size, Rest, {Idx, Pid}, Inflight);
                 false -> choose_conn(Counters, Size, Rest, Best, BestInflight)
@@ -464,8 +513,8 @@ choose_conn(Counters, Size, [{Idx, Pid, _Max} = C | Rest], Best, BestInflight) -
     end.
 
 can_take(Counters, Size, {Idx, _Pid, Max}) ->
-    counters:get(Counters, Size + Idx) =:= 0 andalso
-        (Max =:= infinity orelse counters:get(Counters, Idx) < Max).
+    atomics:get(Counters, Size + Idx) =:= 0 andalso
+        (Max =:= infinity orelse atomics:get(Counters, Idx) < Max).
 
 %%--------------------------------------------------------------------
 %% The process of the client
@@ -631,7 +680,7 @@ remaining(Deadline) -> Deadline - erlang:monotonic_time(millisecond).
 %% Wait until no unary call is in flight, or until the deadline.
 wait_drained(Counters, Deadline) ->
     InFlight = lists:sum([
-        counters:get(C, Idx) || {C, Size} <- Counters, Idx <- lists:seq(1, Size)
+        atomics:get(C, Idx) || {C, Size} <- Counters, Idx <- lists:seq(1, Size)
     ]),
     case InFlight of
         0 ->
@@ -703,3 +752,86 @@ validate_target(#{id := _, host := Host, port := Port} = Target) when is_integer
     Target#{host := Host1};
 validate_target(Other) ->
     error({invalid_target, Other}).
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+%% Run `Fun' in `N' processes and collect the results. The processes spin on a flag until all of
+%% them are running, so that they are on different schedulers when they start.
+concurrently(N, Fun) ->
+    Self = self(),
+    Flag = atomics:new(1, []),
+    Pids = [spawn_link(fun() ->
+        ok = spin(Flag),
+        Self ! {self(), Fun()}
+    end) || _ <- lists:seq(1, N)],
+    timer:sleep(5),
+    ok = atomics:put(Flag, 1, 1),
+    [receive {P, R} -> R end || P <- Pids].
+
+spin(Flag) ->
+    case atomics:get(Flag, 1) of
+        0 -> spin(Flag);
+        1 -> ok
+    end.
+
+%% A race is not hit by every run: the scenarios are repeated.
+-define(ROUNDS, 200).
+
+reserve_never_exceeds_max_test() ->
+    Max = 1,
+    Conns = [{1, self(), Max}],
+    [begin
+         A = atomics:new(3, [{signed, true}]),
+         Results = concurrently(8, fun() -> choose_conn(A, 1, Conns, true) end),
+         ?assertEqual(Max, length([R || R <- Results, R =/= none])),
+         ?assertEqual(Max, atomics:get(A, 1))
+     end || _ <- lists:seq(1, ?ROUNDS)],
+    ok.
+
+reserve_falls_over_to_the_next_connection_test() ->
+    Conns = [{1, c1, 1}, {2, c2, 1}],
+    [begin
+         A = atomics:new(5, [{signed, true}]),
+         Results = concurrently(8, fun() -> choose_conn(A, 2, Conns, true) end),
+         Got = [R || R <- Results, R =/= none],
+         ?assertEqual(2, length(Got)),
+         ?assertEqual([1, 1], [atomics:get(A, 1), atomics:get(A, 2)])
+     end || _ <- lists:seq(1, ?ROUNDS)],
+    ok.
+
+reserve_skips_a_draining_connection_test() ->
+    A = atomics:new(3, [{signed, true}]),
+    ok = atomics:put(A, 2 + 1, 1),
+    ?assertEqual(none, choose_conn(A, 2, [{1, c1, infinity}], true)),
+    ?assertEqual(0, atomics:get(A, 1)).
+
+reserve_without_a_limit_counts_test() ->
+    A = atomics:new(3, [{signed, true}]),
+    Results = concurrently(50, fun() -> choose_conn(A, 1, [{1, c, infinity}], true) end),
+    ?assertEqual(50, length([R || R <- Results, R =/= none])),
+    ?assertEqual(50, atomics:get(A, 1)).
+
+budget_does_not_lose_updates_test() ->
+    Retry = #{budget => #{max_tokens => 1000, token_ratio => 1.0}},
+    [begin
+         A = atomics:new(3, [{signed, true}]),
+         Target = {id, A, 1},
+         ok = atomics:put(A, 3, 1000 * 1000),
+         concurrently(8, fun() -> budget_failure(Target, Retry) end),
+         ?assertEqual(1000 * 1000 - 8 * 1000, atomics:get(A, 3)),
+         concurrently(8, fun() -> budget_success(Target, Retry) end),
+         ?assertEqual(1000 * 1000 - 8 * 1000 + 8 * 1000, atomics:get(A, 3))
+     end || _ <- lists:seq(1, ?ROUNDS)],
+    ok.
+
+budget_stays_within_bounds_test() ->
+    A = atomics:new(3, [{signed, true}]),
+    Target = {id, A, 1},
+    Retry = #{budget => #{max_tokens => 10, token_ratio => 0.5}},
+    ok = atomics:put(A, 3, 10 * 1000),
+    concurrently(100, fun() -> budget_success(Target, Retry) end),
+    ?assertEqual(10 * 1000, atomics:get(A, 3)),
+    concurrently(20, fun() -> budget_failure(Target, Retry) end),
+    ?assertEqual(0, atomics:get(A, 3)).
+-endif.

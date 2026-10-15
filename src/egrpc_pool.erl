@@ -4,10 +4,10 @@
 %% The pool starts `pool_size' gun connections, it is the owner of all of them, so the `gun_up',
 %% `gun_down' and settings notifications of them come to it. It reconnects a connection which is
 %% lost with backoff, and writes the row of the target in `egrpc_rows' every time the connections
-%% which are up change. The calls read the row and the `counters' of the pool in their own process,
+%% which are up change. The calls read the row and the `atomics' of the pool in their own process,
 %% a call never goes through this process.
 %%
-%% The `counters' have, for the connection `Idx' of `Size': the calls in flight at `Idx', and the
+%% The `atomics' have, for the connection `Idx' of `Size': the calls in flight at `Idx', and the
 %% flag of draining at `Size + Idx'. The flag is set by a caller which saw `goaway' or `closing' of
 %% the connection, and cleared when the connection is up again. The slot `2 * Size + 1' has the
 %% tokens of the retries of the target, in thousandths.
@@ -56,7 +56,7 @@
     size :: pos_integer(),
     gun_opts :: gun:opts(),
     backoff :: backoff_opts(),
-    counters :: counters:counters_ref(),
+    counters :: atomics:atomics_ref(),
     conns = #{} :: #{pos_integer() => #c{}},
     pids = #{} :: #{pid() => pos_integer()}
 }).
@@ -102,12 +102,12 @@ init(#{
         size = Size,
         gun_opts = GunOpts,
         backoff = Backoff,
-        counters = counters:new(2 * Size + 1, [write_concurrency])
+        counters = atomics:new(2 * Size + 1, [{signed, true}])
     },
     case Budget of
         #{max_tokens := MaxTokens} ->
             %% in thousandths of a token, see `egrpc_client'
-            counters:put(State0#state.counters, 2 * Size + 1, MaxTokens * 1000);
+            atomics:put(State0#state.counters, 2 * Size + 1, MaxTokens * 1000);
         undefined ->
             ok
     end,
@@ -131,7 +131,7 @@ handle_info({gun_up, Pid, _Protocol}, State0) ->
             {noreply, State0};
         Idx ->
             %% a connection which is up again takes calls again
-            counters:put(State0#state.counters, State0#state.size + Idx, 0),
+            atomics:put(State0#state.counters, State0#state.size + Idx, 0),
             State = update(Idx, fun(C) -> C#c{state = ready, attempt = 0} end, State0),
             publish(State),
             {noreply, State}

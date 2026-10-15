@@ -69,7 +69,7 @@
 
 %% The connection: what `close/1,2' acts on, and what derived channels share.
 %%
-%% `ref' is set for the channels of a client: the `counters' of its target and the slots of this
+%% `ref' is set for the channels of a client: the `atomics' of its target and the slots of this
 %% connection in it, see `egrpc_pool'.
 -record(conn, {
     host :: string(),
@@ -100,9 +100,9 @@
 
 -type channel() :: #channel{}.
 
-%% The `counters' of a target, the slot of the calls in flight on a connection and the slot of its
+%% The `atomics' of a target, the slot of the calls in flight on a connection and the slot of its
 %% `draining' flag.
--type counters_ref() :: {counters:counters_ref(), InflightSlot :: pos_integer(), FlagSlot :: pos_integer()}.
+-type counters_ref() :: {atomics:atomics_ref(), InflightSlot :: pos_integer(), FlagSlot :: pos_integer()}.
 
 -type opts() :: #{
     metadata => metadata(),
