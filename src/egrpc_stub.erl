@@ -24,7 +24,11 @@
     codec/1,
     interceptor_chain/1,
     interceptor_states/1,
-    call_credentials/1
+    call_credentials/1,
+    client_channel/1,
+    attach/5,
+    counters_ref/1,
+    gun_opts/1
 ]).
 
 -export([
@@ -64,10 +68,14 @@
 ]).
 
 %% The connection: what `close/1,2' acts on, and what derived channels share.
+%%
+%% `ref' is set for the channels of a client: the `counters' of its target and the slots of this
+%% connection in it, see `egrpc_pool'.
 -record(conn, {
     host :: string(),
     port :: inet:port_number(),
-    conn_pid :: pid()
+    conn_pid :: pid() | undefined,
+    ref :: undefined | counters_ref()
 }).
 
 %% What a call goes through, as opposed to the connection. `derive/2' replaces it.
@@ -91,6 +99,10 @@
 }).
 
 -type channel() :: #channel{}.
+
+%% The `counters' of a target, the slot of the calls in flight on a connection and the slot of its
+%% `draining' flag.
+-type counters_ref() :: {counters:counters_ref(), InflightSlot :: pos_integer(), FlagSlot :: pos_integer()}.
 
 -type opts() :: #{
     metadata => metadata(),
@@ -209,6 +221,38 @@ open(Host, Port, Opts0) ->
         E -> E
     end.
 
+%% @private
+%% The channel of a client, without a connection: its pipeline and its codec. `attach/5' makes the
+%% channel of a connection of it. The options are the ones of `open/3' which are not of the
+%% connection.
+-spec client_channel(conn_opts()) -> channel().
+client_channel(Opts) ->
+    ok = check_removed_opts(Opts),
+    Codec = maps:get(codec, Opts, egrpc_proto),
+    egrpc_codec:is_codec(Codec) orelse error({invalid_codec, Codec}),
+    Pipeline = maps:fold(fun set_pipeline_opt/3, new_pipeline(), maps:with(?PIPELINE_OPTS, Opts)),
+    #channel{
+        conn = #conn{host = "", port = 0, conn_pid = undefined},
+        codec = Codec,
+        pipeline = Pipeline,
+        closable = false
+    }.
+
+%% @private
+%% The channel of a connection of a client. It can not be closed, the pool of the target owns the
+%% connection.
+-spec attach(channel(), string(), inet:port_number(), pid(), counters_ref()) -> channel().
+attach(#channel{} = Template, Host, Port, ConnPid, Ref) ->
+    Template#channel{
+        conn = #conn{host = Host, port = Port, conn_pid = ConnPid, ref = Ref},
+        closable = false
+    }.
+
+%% @private
+-spec counters_ref(channel()) -> undefined | counters_ref().
+counters_ref(#channel{conn = #conn{ref = Ref}}) -> Ref.
+
+%% @private
 %% The options of gun: the defaults, `gun_opts' of the user, and `http2' of the user on top of the
 %% `http2_opts' of `gun_opts'.
 -spec gun_opts(conn_opts()) -> gun:opts().
@@ -361,34 +405,47 @@ close(#channel{conn = #conn{conn_pid = ConnPid}}, true) ->
     gun:close(ConnPid).
 
 %% @doc Make a unary RPC call.
--spec unary(channel(), Request, Grpc, Opts) -> unary_ret(Response) when
+%%
+%% The first argument is a channel, or the name of a client (`m:egrpc_client'), which chooses the
+%% connection.
+-spec unary(channel() | egrpc:client_name(), Request, Grpc, Opts) -> unary_ret(Response) when
     Request :: map(),
     Response :: map(),
-    Opts :: opts(),
+    Opts :: opts() | egrpc_client:call_opts(),
     Grpc :: egrpc:grpc().
+unary(Name, Request, Grpc, Opts) when is_atom(Name) ->
+    egrpc_client:unary(Name, Request, Grpc, Opts);
 unary(Channel, Request, Grpc, Opts0) ->
     egrpc_stream:unary(egrpc_stream:new(Channel, Grpc), Request, Opts0).
 
 %% @doc Make a client streaming RPC call.
--spec client_streaming(channel(), Grpc, Opts) -> {ok, egrpc:stream()} | {error, any()} when
-    Opts :: opts(),
+-spec client_streaming(channel() | egrpc:client_name(), Grpc, Opts) ->
+    {ok, egrpc:stream()} | {error, any()} when
+    Opts :: opts() | egrpc_client:call_opts(),
     Grpc :: egrpc:grpc().
+client_streaming(Name, Grpc, Opts) when is_atom(Name) ->
+    egrpc_client:client_streaming(Name, Grpc, Opts);
 client_streaming(Channel, Grpc, Opts0) ->
     egrpc_stream:client_streaming(egrpc_stream:new(Channel, Grpc), Opts0).
 
 %% @doc Make a server streaming RPC call.
--spec server_streaming(channel(), Request, Grpc, Opts) ->
+-spec server_streaming(channel() | egrpc:client_name(), Request, Grpc, Opts) ->
     {ok, egrpc:stream()} | {error, any()} when
     Request :: map(),
-    Opts :: opts(),
+    Opts :: opts() | egrpc_client:call_opts(),
     Grpc :: egrpc:grpc().
+server_streaming(Name, Request, Grpc, Opts) when is_atom(Name) ->
+    egrpc_client:server_streaming(Name, Request, Grpc, Opts);
 server_streaming(Channel, Request, Grpc, Opts0) ->
     egrpc_stream:server_streaming(egrpc_stream:new(Channel, Grpc), Request, Opts0).
 
 %% @doc Make a bidirectional streaming RPC call.
--spec bidi_streaming(channel(), Grpc, Opts) -> {ok, egrpc:stream()} | {error, any()} when
-    Opts :: opts(),
+-spec bidi_streaming(channel() | egrpc:client_name(), Grpc, Opts) ->
+    {ok, egrpc:stream()} | {error, any()} when
+    Opts :: opts() | egrpc_client:call_opts(),
     Grpc :: egrpc:grpc().
+bidi_streaming(Name, Grpc, Opts) when is_atom(Name) ->
+    egrpc_client:bidi_streaming(Name, Grpc, Opts);
 bidi_streaming(Channel, Grpc, Opts0) ->
     egrpc_stream:bidi_streaming(egrpc_stream:new(Channel, Grpc), Opts0).
 

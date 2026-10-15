@@ -8,7 +8,7 @@
 
 -behaviour(cowboy_handler).
 
--export([start/1, stop/1, port/1]).
+-export([start/1, start/2, stop/1, port/1]).
 -export([ok/1, status/2, frame/1]).
 -export([init/2]).
 
@@ -43,11 +43,17 @@
 %% `{fake_server_request, Request}'.
 -spec start(handler()) -> {ok, Ref :: term()}.
 start(Handler) ->
+    start(Handler, #{}).
+
+%% @doc Like `start/1', `Extra' are options of cowboy, for example `max_concurrent_streams' which
+%% the server tells the client in its SETTINGS.
+-spec start(handler(), map()) -> {ok, Ref :: term()}.
+start(Handler, Extra) ->
     Ref = {?MODULE, make_ref()},
     Dispatch = cowboy_router:compile([
         {'_', [{'_', ?MODULE, #{handler => Handler, notify => self()}}]}
     ]),
-    {ok, _} = cowboy:start_clear(Ref, [{port, 0}], #{
+    {ok, _} = cowboy:start_clear(Ref, [{port, 0}], Extra#{
         protocols => [http2],
         env => #{dispatch => Dispatch}
     }),

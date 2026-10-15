@@ -18,7 +18,7 @@
     set_info/2
 ]).
 
--export([build_chain/1]).
+-export([build_chain/1, with_deadline/1]).
 
 -export([
     unary/3,
@@ -187,6 +187,7 @@ client_streaming(#stream{} = Stream, Opts) ->
 bidi_streaming(#stream{} = Stream, Opts) ->
     init_req(Stream, with_deadline(Opts)).
 
+%% @private
 %% The `deadline' option, relative and in milliseconds, becomes a time of the monotonic clock once,
 %% before the interceptors, so that every attempt of a call has the same end. It is in the options
 %% which the interceptors pass on as `deadline_at'.
@@ -201,8 +202,25 @@ with_deadline(Opts) ->
 remaining(undefined) -> undefined;
 remaining(DeadlineAt) -> DeadlineAt - erlang:monotonic_time(millisecond).
 
-%% `gun:await/3' which does not wait past the deadline of the call.
-await(#stream{channel = Channel, stream_ref = SRef, deadline_at = DeadlineAt}, Timeout) ->
+%% `gun:await/3' which does not wait past the deadline of the call. A connection of a client which
+%% turned out to be closing is marked, so that the calls after this one use another.
+await(#stream{channel = Channel} = Stream, Timeout) ->
+    Result = await_(Stream, Timeout),
+    ok = note(Result, Channel),
+    Result.
+
+note({error, {stream_error, {goaway, _, _}}}, Channel) -> mark_draining(Channel);
+note({error, {stream_error, closing}}, Channel) -> mark_draining(Channel);
+note(_, _Channel) -> ok.
+
+%% The flag of the connection in the `counters' of the target of a client, see `egrpc_pool'.
+mark_draining(Channel) ->
+    case egrpc_stub:counters_ref(Channel) of
+        {Counters, _InflightSlot, FlagSlot} -> counters:put(Counters, FlagSlot, 1);
+        undefined -> ok
+    end.
+
+await_(#stream{channel = Channel, stream_ref = SRef, deadline_at = DeadlineAt}, Timeout) ->
     ConnPid = egrpc_stub:conn_pid(Channel),
     case remaining(DeadlineAt) of
         undefined ->
