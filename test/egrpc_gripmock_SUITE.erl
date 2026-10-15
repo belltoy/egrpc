@@ -28,12 +28,20 @@
     unary_delay/1,
     server_streaming/1,
     client_streaming/1,
-    bidi_streaming/1
+    bidi_streaming/1,
+    client_unary/1,
+    client_unary_status_error/1,
+    client_call_credentials/1,
+    client_deadline/1,
+    client_concurrent_unary/1,
+    client_server_streaming/1,
+    client_bidi_streaming/1
 ]).
 
 -define(SERVICE, 'egrpc.test.v1.Echo').
 -define(IMAGE, "bavix/gripmock:latest").
 -define(CONTAINER, "egrpc-gripmock-test").
+-define(CLIENT, egrpc_gripmock_SUITE_client).
 
 all() ->
     [
@@ -44,7 +52,14 @@ all() ->
         unary_delay,
         server_streaming,
         client_streaming,
-        bidi_streaming
+        bidi_streaming,
+        client_unary,
+        client_unary_status_error,
+        client_call_credentials,
+        client_deadline,
+        client_concurrent_unary,
+        client_server_streaming,
+        client_bidi_streaming
     ].
 
 init_per_suite(Config) ->
@@ -71,6 +86,7 @@ init_per_testcase(_Case, Config) ->
     [{channel, Channel}, {http_port, HttpPort} | Config].
 
 end_per_testcase(_Case, Config) ->
+    _ = egrpc_client:stop(?CLIENT, 1000),
     egrpc_stub:close(?config(channel, Config), true),
     ok.
 
@@ -183,8 +199,106 @@ bidi_streaming(Config) ->
     ?assertEqual([#{message => <<"echo1">>}, #{message => <<"echo2">>}], [M1, M2]),
     ?assertEqual(ok, recv_status(Stream6)).
 
+%% The same calls through a client: the name goes where the channel went.
+
+client_unary(Config) ->
+    stub(Config, #{
+        service => ?SERVICE, method => <<"Unary">>,
+        input => #{equals => #{message => <<"hi">>}},
+        output => #{data => #{message => <<"hello">>}}
+    }),
+    start_client(Config, #{}),
+    ?assertEqual({ok, #{message => <<"hello">>}}, client_unary_call(<<"hi">>, #{})).
+
+client_unary_status_error(Config) ->
+    stub(Config, #{
+        service => ?SERVICE, method => <<"Unary">>,
+        input => #{equals => #{message => <<"err">>}},
+        output => #{error => <<"not here">>, code => 5}
+    }),
+    start_client(Config, #{}),
+    ?assertEqual({error, {grpc_error, not_found, <<"not here">>}}, client_unary_call(<<"err">>, #{})).
+
+%% The credentials of the client reach the server as request metadata.
+client_call_credentials(Config) ->
+    stub(Config, #{
+        service => ?SERVICE, method => <<"Unary">>,
+        headers => #{equals => #{<<"x-token">> => <<"abc">>}},
+        input => #{equals => #{message => <<"cred">>}},
+        output => #{data => #{message => <<"authorized">>}}
+    }),
+    Cred = fun(_Stream) -> {ok, #{<<"x-token">> => <<"abc">>}} end,
+    start_client(Config, #{conn_opts => #{call_credentials => Cred}}),
+    ?assertEqual({ok, #{message => <<"authorized">>}}, client_unary_call(<<"cred">>, #{})).
+
+client_deadline(Config) ->
+    stub(Config, #{
+        service => ?SERVICE, method => <<"Unary">>,
+        input => #{equals => #{message => <<"slow">>}},
+        output => #{data => #{message => <<"late">>}, delay => <<"2s">>}
+    }),
+    start_client(Config, #{}),
+    T0 = erlang:monotonic_time(millisecond),
+    ?assertMatch({error, {grpc_error, deadline_exceeded, _}},
+                 client_unary_call(<<"slow">>, #{deadline => 300})),
+    ?assert(erlang:monotonic_time(millisecond) - T0 < 1500).
+
+%% More calls at the same time than connections.
+client_concurrent_unary(Config) ->
+    stub(Config, #{
+        service => ?SERVICE, method => <<"Unary">>,
+        input => #{equals => #{message => <<"hi">>}},
+        output => #{data => #{message => <<"hello">>}, delay => <<"100ms">>}
+    }),
+    start_client(Config, #{pool_size => 2}),
+    Self = self(),
+    Pids = [spawn_link(fun() -> Self ! {self(), client_unary_call(<<"hi">>, #{})} end)
+            || _ <- lists:seq(1, 20)],
+    Results = [receive {Pid, R} -> R after 10000 -> timeout end || Pid <- Pids],
+    ?assertEqual(lists:duplicate(20, {ok, #{message => <<"hello">>}}), Results).
+
+client_server_streaming(Config) ->
+    stub(Config, #{
+        service => ?SERVICE, method => <<"ServerStream">>,
+        input => #{equals => #{message => <<"s">>}},
+        output => #{stream => [#{message => <<"a">>}, #{message => <<"b">>}]}
+    }),
+    start_client(Config, #{}),
+    {ok, Stream0} = egrpc_stub:server_streaming(
+        ?CLIENT, #{message => <<"s">>}, grpc(<<"ServerStream">>), #{}
+    ),
+    {ok, Stream1} = egrpc_stream:recv_header(Stream0, 5000),
+    {Msgs, Stream} = recv_n(2, Stream1, <<>>, []),
+    ?assertEqual([#{message => <<"a">>}, #{message => <<"b">>}], Msgs),
+    ?assertEqual(ok, recv_status(Stream)).
+
+client_bidi_streaming(Config) ->
+    stub(Config, #{
+        service => ?SERVICE, method => <<"Bidi">>,
+        input => #{equals => #{message => <<"b1">>}},
+        output => #{data => #{message => <<"echo1">>}}
+    }),
+    start_client(Config, #{}),
+    {ok, Stream0} = egrpc_stub:bidi_streaming(?CLIENT, grpc(<<"Bidi">>), #{}),
+    {ok, Stream1} = egrpc_stream:send_msg(Stream0, #{message => <<"b1">>}, nofin),
+    {ok, Stream2} = egrpc_stream:recv_header(Stream1, 5000),
+    {[M1], Stream3} = recv_n(1, Stream2, <<>>, []),
+    ?assertEqual(#{message => <<"echo1">>}, M1),
+    {ok, Stream4} = egrpc_stream:close_send(Stream3),
+    ?assertEqual(ok, recv_status(Stream4)).
+
 %%--------------------------------------------------------------------
 %% Helpers
+
+start_client(Config, Opts) ->
+    {_, GrpcPort, _} = ?config(gripmock, Config),
+    ok = egrpc_client:start(?CLIENT, Opts#{
+        targets => [#{id => gripmock, host => "localhost", port => GrpcPort}]
+    }),
+    ok = egrpc_client:await_ready(?CLIENT, 5000).
+
+client_unary_call(Message, Opts) ->
+    egrpc_stub:unary(?CLIENT, #{message => Message}, grpc(<<"Unary">>), Opts).
 
 grpc(Method) ->
     #{
