@@ -107,8 +107,19 @@
     call_credentials => call_credentials() | undefined,
     %% The module of the codec, `egrpc_proto' by default. Not an option of `derive/2'.
     codec => module(),
-    retry => non_neg_integer(),
+    %% The options of HTTP/2 connections, they are put in `http2_opts' of `gun_opts' and take
+    %% precedence over the ones which are there.
+    http2 => http2_opts(),
     info => term()
+}.
+
+%% `keepalive' is the interval of the PING frames in milliseconds (`infinity' by default in gun),
+%% `keepalive_tolerance' how many PINGs may be unacknowledged before the connection is closed, and
+%% `closing_timeout' how long a connection which received `GOAWAY' waits for its streams to end.
+-type http2_opts() :: #{
+    keepalive => timeout(),
+    keepalive_tolerance => non_neg_integer(),
+    closing_timeout => timeout()
 }.
 
 %% Called before every call is sent, in the process which makes the call. The metadata it returns
@@ -126,6 +137,7 @@
 }.
 
 -define(PIPELINE_OPTS, [interceptors, call_credentials, info]).
+-define(HTTP2_OPTS, [keepalive, keepalive_tolerance, closing_timeout]).
 %% The options of 0.1.x which were replaced by `interceptors'.
 -define(REMOVED_OPTS, [unary_interceptors, stream_interceptors]).
 
@@ -162,10 +174,8 @@
     Host :: string(),
     Port :: inet:port_number().
 open(Host, Port, Opts0) ->
-    GunOpts0 = maps:get(gun_opts, Opts0, #{}),
-    GunOpts = maps:merge(#{retry => 0, protocols => [http2]}, GunOpts0),
-
     ok = check_removed_opts(Opts0),
+    GunOpts = gun_opts(Opts0),
     Codec = maps:get(codec, Opts0, egrpc_proto),
     egrpc_codec:is_codec(Codec) orelse error({invalid_codec, Codec}),
     Pipeline = maps:fold(fun set_pipeline_opt/3, new_pipeline(), maps:with(?PIPELINE_OPTS, Opts0)),
@@ -181,6 +191,25 @@ open(Host, Port, Opts0) ->
         {ok, Channel}
     else
         E -> E
+    end.
+
+%% The options of gun: the defaults, `gun_opts' of the user, and `http2' of the user on top of the
+%% `http2_opts' of `gun_opts'.
+-spec gun_opts(conn_opts()) -> gun:opts().
+gun_opts(Opts) ->
+    GunOpts0 = maps:get(gun_opts, Opts, #{}),
+    Http2 = maps:get(http2, Opts, #{}),
+    case [K || K <- maps:keys(Http2), not lists:member(K, ?HTTP2_OPTS)] of
+        [] -> ok;
+        [Key | _] -> error({invalid_http2_option, Key})
+    end,
+    GunOpts = maps:merge(#{retry => 0, protocols => [http2]}, GunOpts0),
+    case maps:size(Http2) of
+        0 ->
+            GunOpts;
+        _ ->
+            Http2Opts = maps:merge(maps:get(http2_opts, GunOpts, #{}), Http2),
+            GunOpts#{http2_opts => Http2Opts}
     end.
 
 %% @doc Return a channel which shares the connection of `Channel' and has a different pipeline.
@@ -349,6 +378,33 @@ bidi_streaming(Channel, Grpc, Opts0) ->
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
+
+gun_opts_test() ->
+    %% the defaults
+    ?assertEqual(#{retry => 0, protocols => [http2]}, gun_opts(#{})),
+    %% the options of the user are on top of the defaults
+    ?assertEqual(
+        #{retry => 3, protocols => [http2]},
+        gun_opts(#{gun_opts => #{retry => 3}})
+    ),
+    %% `http2' is put in `http2_opts', and wins over the ones of `gun_opts'
+    ?assertEqual(
+        #{retry => 0, protocols => [http2], http2_opts => #{keepalive => 30000}},
+        gun_opts(#{http2 => #{keepalive => 30000}})
+    ),
+    ?assertEqual(
+        #{
+            retry => 0,
+            protocols => [http2],
+            http2_opts => #{keepalive => 1000, keepalive_tolerance => 2, flow => 10}
+        },
+        gun_opts(#{
+            gun_opts => #{http2_opts => #{keepalive => 5, flow => 10}},
+            http2 => #{keepalive => 1000, keepalive_tolerance => 2}
+        })
+    ),
+    % eqwalizer:ignore
+    ?assertError({invalid_http2_option, foo}, gun_opts(#{http2 => #{foo => 1}})).
 
 %% A channel without a gun connection, `derive/2' and the getters do not need one.
 test_channel() ->
