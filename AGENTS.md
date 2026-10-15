@@ -3,14 +3,16 @@
 ## Overview
 
 A gRPC client library for Erlang/OTP built on top of [gun](https://github.com/ninenines/gun). It
-provides channels, unary and streaming calls, interceptors, pluggable codecs, and generated clients
-for the standard health and reflection APIs.
+provides channels, clients (several targets, a pool of connections for each, reconnect, balancing,
+retries), unary and streaming calls, interceptors, pluggable codecs, and generated clients for the
+standard health and reflection APIs.
 
 Downstream: [etcdgun](https://github.com/belltoy/etcdgun) depends on egrpc and is the main user of its interceptor and
-channel APIs. Check it when changing those.
+channel APIs. Check it when changing those. The client layer is not designed around etcdgun, and
+migrating etcdgun is not part of this repository's work.
 
-The planned refactoring is described in [REFACTOR.md](REFACTOR.md). Read it before changing the
-channel or interceptor design.
+The refactoring is described in [REFACTOR.md](REFACTOR.md). Read it before changing the channel,
+interceptor or client design. The client layer is section 10 of it.
 
 ## Key constraints
 
@@ -22,6 +24,9 @@ channel or interceptor design.
   in the `dev` profile, the default profile does not regenerate anything.
 - Never edit generated files by hand, the changes are lost on the next generation. Change the protos or
   the plugin options in `rebar.config` instead.
+- The plugin is used from the `enhance` branch of `rebar3_egrpc_plugin` until a release has
+  `client_type` and `method_meta_type`. After `rebar.config` changes the plugin, run
+  `rebar3 plugins upgrade rebar3_egrpc_plugin`, otherwise the old one is used and nothing changes.
 
 **Do not publish or tag on your own.** Releasing to hex and pushing tags is the maintainer's job. Only
 do it when explicitly asked.
@@ -48,8 +53,8 @@ versions:
 
 | Layer | Where | Run with |
 |---|---|---|
-| eunit, pure logic | inline in the modules (`-ifdef(TEST)`), for example `egrpc_error.erl`, `egrpc_grpc.erl` | `rebar3 eunit` |
-| Common Test, fake server | `test/egrpc_unary_SUITE.erl`, `test/egrpc_gun_SUITE.erl`; the server is `test/egrpc_fake_server.erl` (cowboy, h2c) which sends exactly the bytes a test asks for | `rebar3 ct` |
+| eunit, pure logic | inline in the modules (`-ifdef(TEST)`), for example `egrpc_error.erl`, `egrpc_grpc.erl`, the balancers and the backoff | `rebar3 eunit` |
+| Common Test, fake server | `test/egrpc_unary_SUITE.erl`, `test/egrpc_gun_SUITE.erl`, `test/egrpc_client_SUITE.erl`; the server is `test/egrpc_fake_server.erl` (cowboy, h2c) which sends exactly the bytes a test asks for | `rebar3 ct` |
 | Common Test, GripMock | `test/egrpc_gripmock_SUITE.erl`; starts the docker image `bavix/gripmock`, skipped when docker or the image is missing, or set `EGRPC_GRIPMOCK_ADDR=Host:GrpcPort:HttpPort` | `rebar3 ct` |
 
 - `rebar3 ct --suite test/egrpc_unary_SUITE` runs one suite. The timeout cases wait for the real
@@ -61,32 +66,62 @@ versions:
 - The tests named `no_leftover_*` in `egrpc_unary_SUITE` check that nothing of a stream is left in the
   caller's mailbox after a failed unary call ([REFACTOR.md](REFACTOR.md), 4.5). Run them a few times
   when touching `cancel_and_flush`, the race is what they guard against.
+- A test which needs GOAWAY, RST_STREAM or a SETTINGS frame with
+  `SETTINGS_MAX_CONCURRENT_STREAMS` needs the fake server to send them; whether cowboy can has to be
+  tried before relying on it.
+- The tests of a client stop it in `end_per_testcase`: a client which is not stopped keeps
+  reconnecting in the background.
 
 ## Architecture
 
 | Module | Role |
 |---|---|
-| `egrpc` | Public types only (`channel()`, `stream()`, `grpc()`, ...) |
-| `egrpc_stub` | Channel: `open/3`, `derive/2`, `await_up/1`, `close/1,2`, `info/1,2`, and the `unary/4` and streaming entry points used by generated clients |
+| `egrpc` | Public types only (`client()`, `channel()`, `stream()`, `grpc()`, `method_meta()`, ...) |
+| `egrpc_stub` | Channel: `open/3`, `derive/2`, `await_up/1,2`, `close/1,2`, `info/1,2`, and the `unary/4` and streaming entry points used by generated clients; the first argument may be the name of a client |
 | `egrpc_stream` | One call: headers, encoding, `build_chain/1` (the composed hooks), `send_msg`, `recv_*`, `parse_msg`, `cancel_stream` |
 | `egrpc_interceptor` | Behaviour of interceptors: `unary/5` wraps a unary call, 6 hooks for the phases of a call; `load/1` validates and initializes a list of interceptors |
 | `egrpc_codec`, `src/codec/*` | Codec behaviour and implementations: `egrpc_proto`, `egrpc_json`, `egrpc_erlpack` |
 | `egrpc_grpc` | gRPC message framing |
-| `egrpc_error` | `grpc-status` to `{grpc_error, Name, Message}` mapping |
-| `egrpc_app`, `egrpc_sup` | Application callback and an empty supervisor, egrpc does not run processes of its own |
+| `egrpc_error` | `grpc-status` to `{grpc_error, Name, Message}` mapping; `class/1` |
+| `egrpc_client` | A named client: `start/2`, `stop/1,2`, `set_targets/2`, `targets/1`, `await_ready/2`, and what the name path of `egrpc_stub` calls (`unary/4` with the retries, the streaming calls); one process for each client, which only keeps the pools of the targets in line with the targets |
+| `egrpc_pool` | One process for each target: owns the `pool_size` gun connections of it (it is their owner), reconnects them with backoff, writes the row of the target in `egrpc_rows`, owns the `counters` of it |
+| `egrpc_balancer` | The order in which the targets are tried (`order/3`), which of them may be used for a call (`eligible/3`), and the behaviour of a balancer module (`pick/3`); `pick_first` and `round_robin` are in `egrpc_client` |
+| `egrpc_registry` | Owns the tables `egrpc_clients` (the desired state), `egrpc_index` (the targets, the round robin, the channel with the pipeline, the balancer and the retry options of a client) and `egrpc_rows` (one row for each target); removes what is left of a client whose supervisor is gone |
+| `egrpc_clients_sup`, `egrpc_client_sup`, `egrpc_pool_sup` | The supervisors, see below |
+| `egrpc_app`, `egrpc_sup` | Application callback; `egrpc_sup` supervises the registry and `egrpc_clients_sup` (`rest_for_one`) |
 
 A channel is a plain record owned by the caller, not a process. The `gun` connection pid lives inside
 it, in a `conn` part which derived channels share; the `pipeline` part (interceptors, `info`) is what
 `derive/2` replaces.
 
+A client is not a channel. The calls of a client are made in the calling process: the target
+and the connection are picked from ETS rows and `counters`, no process is on the path of a call.
+The processes only keep the connections and the rows up to date.
+
+```
+egrpc_sup (rest_for_one)
+ |- egrpc_registry
+ `- egrpc_clients_sup (simple_one_for_one)
+     `- egrpc_client_sup (for each client, rest_for_one)
+         |- egrpc_pool_sup (one_for_one) -- egrpc_pool (for each target)
+         `- egrpc_client
+```
+
+A client which crashes does not take the connections with it: the pools are before it in its
+supervisor, and it reads its targets from `egrpc_clients` when it starts.
+
 ## Gotchas
 
 - **gun does not retry by default:** `open/3` merges `#{retry => 0, protocols => [http2]}` into the gun
-  options. When the connection can not be established, the gun process exits.
+  options. When the connection can not be established, the gun process exits. A client sets
+  `retry => 0` itself and does the reconnect in `egrpc_pool`, so that `gun_opts` can not change it.
 - **`close/1` is graceful:** it is `gun:shutdown/1` and the connection may linger until the server
   closes it. `close(Channel, true)` is `gun:close/1`, immediate.
 - **gun messages go to the requesting process.** Responses of a stream are delivered to the process
   which made the request, and `gun_up`/`gun_down` go to the process which opened the connection.
+  For a client the owner of a connection is its `egrpc_pool`. The holder of a stream gets
+  `{gun_error, _, _, closed | {closed, Reason}}` for every stream when the connection is lost, before
+  the owner gets `gun_down`; `gun_down` is not sent to the holder.
 - **Interceptors:** one list in the `interceptors` option of `open/3` and `derive/2`, `Module`,
   `{Module, InitOpts}` or a `fun/4` (a stateless wrap of unary calls). The first element is the
   outermost. The `unary/5` wraps are outside all the hooks, and the hooks fire for unary calls too.
@@ -105,10 +140,49 @@ it, in a `conn` part which derived channels share; the `pipeline` part (intercep
 - **The unary response timeout** is `timeout` in the call options, 5000 ms by default, for each wait
   for a message (not a deadline, not sent to the server). After a failure other than a status of the
   server, `egrpc_stream` cancels the stream and flushes the mailbox of the caller (`cancel_and_flush`).
+- **`deadline`** in the call options is the time of the whole call in milliseconds, relative.
+  `egrpc_stub` turns it into an absolute monotonic time before the interceptors, so that a retry
+  shares it. It is sent as `grpc-timeout`, and the end of it is
+  `{error, {grpc_error, deadline_exceeded, _}}`. Do not confuse it with `timeout`.
+- **Errors keep the raw reasons of gun** (`timeout`, `{stream_error, {goaway, _, _}}`, ...).
+  `egrpc_error:class/1` is what tells `not_sent` from `unknown`; do not add a wrapper tuple to the
+  result of the calls. `{goaway, _, _}`, `closing` and `{stream_error, refused_stream, _}` are `not_sent`,
+  `{closed, _}` and `{down, _}` are `unknown`.
+- **Calls of a client never wait for a connection:** `{error, {no_connection_available, Reason}}`
+  at once (`no_targets`, `no_ready`, `all_excluded`), `{error, client_not_found}` when the name is not
+  registered. `start/2` is asynchronous and `await_ready/2` is how to wait.
+- **Nothing of a client is kept in `persistent_term`**, its channel with the pipeline is in the
+  row of `egrpc_index`.
+- **A client has to be stopped.** It keeps retrying when no target can be reached, there is no
+  limit. `stop/1` removes the registry entry first, waits for `inflight` to be 0 or for the timeout
+  (5000 ms), then closes the connections.
+- **The registry entry of a client holds its desired state** (options and targets). `set_targets/2`
+  writes it before it applies it, and a restarted `egrpc_client` reads it. The snapshot rows and the
+  `counters` are the observed state and are rebuilt.
+- **Retries are made in `egrpc_client:unary/4`, not in an interceptor**, only with the `retry`
+  option of the client. The reason: the
+  channel is picked before the interceptors run and `Next` of an interceptor can not pick another
+  target. Every attempt picks again and goes through all the interceptors and `call_credentials`;
+  `deadline` is computed once at the entry. There is a `FIXME` in the code about doing it as an
+  interceptor later.
+- **The idempotency of a method** is `proplists:get_value(idempotency_level, Opts)` of the
+  `opts` of `rpc_def` in the `Grpc` map (`'IDEMPOTENT'`, `'NO_SIDE_EFFECTS'`, or not set). gpb puts it
+  there, the plugin does not have to.
+- **`excluded`** is in the call `Opts`, a list of target ids which the balancer must not pick.
+- **`counters` of a target:** `inflight` for each connection (unary calls, in `try ... after` in
+  the name path) and a state bit for each connection, `goaway`, which a caller sets when it saw
+  `goaway` or `closing` and `pick` skips. Streams are not counted. Do not make the owner of a stream a counted
+  object without reading section 10 of `REFACTOR.md`.
+- **The maximum number of concurrent streams of the peer** is read from
+  `{gun_notify, ConnPid, settings_changed, Settings}`, which gun only sends when
+  `http2_opts => #{notify_settings_changed => true}` is set, and only to the owner of the connection
+  (`egrpc_pool`). It is `infinity` until the peer sets it. Do not set the option in `open/3`: the
+  owner there is the caller, and `gun:await` would return `{notify, settings_changed, _}` to it.
 - **`info` is a per-channel term** of the pipeline, set by `open/3` or `derive/2`, not meant for per-call
   data. There is no `set_info/2`.
 - **A derived channel can not be closed:** `derive/2` returns a channel which shares the connection, and
   `close/1,2` on it raises `not_closable`. Keep the channel which `open/3` returned.
+- **`await_up/2` does not close the channel** when it fails, the caller does.
 - **`maybe` expressions are used**, with `-feature(maybe_expr, enable)` in the modules.
 - **Keep the versions in sync** when preparing a release: `vsn` in `src/egrpc.app.src` and the
   dependency snippet in `README.md`. egrpc does not send a `user-agent` header.
@@ -129,9 +203,16 @@ it, in a `conn` part which derived channels share; the `pipeline` part (intercep
 - **Git-ignored files:** `doc/`, `rebar.lock`, `.mise.toml`, `config/sys.dev.config`,
   `rebar3.crashdump`, and `.elp_lint.toml` (locally excluded). Do not commit them.
 
+## Not in the first release of the client layer
+
+Not built: the active mode of streams (a relay process for each stream), counting of streams,
+resolvers (DNS and others), telemetry, hedging, the scaling of a pool, TLS options for each target.
+Section 10.8 of `REFACTOR.md` says why and what was thought of.
+
 ## Conventions
 
 - Match the surrounding code: comment density, naming, edoc (`%% @doc`) for exported functions.
 - Commit messages are short and imperative, optionally with a type prefix (`fix:`, `doc:`).
-- When changing the interceptor or channel behaviour, add or update tests, and verify against etcdgun
-  (https://github.com/belltoy/etcdgun) with an etcd cluster if the change affects how it opens channels or passes the token.
+- When changing the interceptor or channel behaviour, add or update tests. etcdgun is
+  checked when the options of `open/3` or the interceptor behaviour change; it is not a reason to
+  change the client layer.

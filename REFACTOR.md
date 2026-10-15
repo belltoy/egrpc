@@ -1,7 +1,9 @@
 # egrpc refactoring plan
 
-Status: implemented on the branch `refactor`, see "Phase 0 status" and "Phase 1 status". Section 8
-lists the decisions; there are no open questions. What is not done is listed in "Phase 1 status".
+Status: implemented, see "Phase 0 status" and "Phase 1 status". Section 8 lists the decisions of
+phases 0 and 1; there are no open questions. What is not done is listed in "Phase 1 status". The
+client layer (several targets, a pool of connections for each, reconnects, retries) was added to the
+same release, it is section 10; it changes the non-goal of 3 about processes.
 
 This is a **breaking change**. Backward compatibility with 0.1.x is explicitly not a goal: old options
 are removed, not deprecated.
@@ -103,7 +105,8 @@ Non-goals:
 
 - Backward compatibility with 0.1.x.
 - Changing the gRPC protocol implementation (frame encoding/decoding, how gun is used).
-- Adding processes or a connection pool. egrpc keeps the model where the caller owns the channel value.
+- Adding processes or a connection pool to *channels*. A channel stays a value which the caller owns.
+  (The client layer of section 10 does have processes, it is a separate thing which uses channels.)
 - Redesigning the streaming receive path, and a "call end" hook (see 4.6).
 - Changing etcdgun as part of this plan.
 
@@ -370,6 +373,7 @@ against the fake server):
 |---|---|
 | 0 | Test infrastructure and characterization tests of the parts which do not change |
 | 1 | The breaking change: record split and `derive/2`, unified interceptors, `call_credentials`, codec and `content-type` (with the `egrpc_json` fix), validation, `timeout`, documentation |
+| 2 | The client layer, with the error class, the deadline, and the retries: section 10 |
 
 Phase 1 is released as one breaking release in the 0.2.x series (0.2.0 is the first). Cutting the
 release is the maintainer's job. The work inside phase 1 can
@@ -561,3 +565,147 @@ None at the moment.
 ## 9. Suggested starting point
 
 Phase 0 first, as the safety net. Then phase 1 in the order given in section 5.
+
+## 10. The client layer
+
+Released with phase 1 in 0.2.0. The single connection stays as it is (`open/3`, `derive/2`); the client
+layer is on top of it.
+
+### 10.1 What it is
+
+A client is a named set of targets, with a fixed number of connections (`pool_size`, 4 by default) to
+each. egrpc keeps the connections, reconnects them with backoff, and chooses one for every call.
+Generated clients and `egrpc_stub` take the name where a channel goes. See the module doc of
+`egrpc_client` for the options.
+
+```erlang
+ok = egrpc_client:start(orders, #{targets => [#{id => a, host => "10.0.0.1", port => 50051}]}),
+ok = egrpc_client:await_ready(orders, 5000),
+{ok, Response} = my_client:method(orders, Request),
+ok = egrpc_client:stop(orders).
+```
+
+### 10.2 Processes and tables
+
+```
+egrpc_sup (rest_for_one)
+ |- egrpc_registry          owns the tables
+ `- egrpc_clients_sup       simple_one_for_one
+     `- egrpc_client_sup    for each client, rest_for_one
+         |- egrpc_pool_sup  one_for_one
+         |   `- egrpc_pool  for each target, the owner of its gun connections
+         `- egrpc_client    the targets
+```
+
+- The state is split into the *desired* state, which only the application knows, and the *observed*
+  state. The desired state (the options and the targets) is in `egrpc_clients`, `set_targets/2`
+  writes it before it applies it, and a restarted `egrpc_client` reads it. The observed state (which
+  connections are up, the `counters`) is written by the pools and rebuilt when they restart.
+- `egrpc_pool` is the owner of the gun connections of its target, so `gun_up`, `gun_down` and the
+  settings notification come to it. A pool which crashes is restarted alone. The pools are before the
+  client in its supervisor, so a client which crashes does not touch the connections.
+- The tables are public and are read in the process of the caller: `egrpc_index` has one row for a
+  client (the ids of the targets, an `atomics` for the round robin, the channel which has the
+  pipeline, the balancer and the retry options), `egrpc_rows` has one row for each target (its
+  attrs, host, port, the `counters` and the connections which are up with the number of concurrent
+  streams the server allows). Nothing is kept in `persistent_term`.
+- The `counters` of a target have, for the connection `Idx` of `Size`: the calls in flight at `Idx`,
+  a flag at `Size + Idx` which is set when a call saw `goaway` or `closing` on the connection and
+  cleared when it is up again, and at `2 * Size + 1` the tokens of the retries in thousandths.
+
+### 10.3 A call
+
+1. `egrpc_stub` sees an atom and calls `egrpc_client`.
+2. The index row gives the ids, in the order of the balancer (`pick_first`, or `round_robin` from
+   the `atomics`). A target is skipped when it is in `excluded` of the options of the call, when it
+   is `standby` and the call has no `hint => #{target => Id}`, or when it has no connection which
+   can take the call.
+3. A connection can take a call when its flag is not set and it has fewer calls in flight than the
+   number of concurrent streams of the server (`infinity` until the server tells). The one with the
+   fewest is taken.
+4. A unary call is counted in `inflight` until it returns (`try ... after`). Streams are **not**
+   counted, see 10.8.
+5. No process is on this path. A call which finds nothing returns at once
+   `{error, {no_connection_available, Reason}}`, `Reason` is `no_targets`, `no_ready` or
+   `all_excluded`; a name which is not started returns `{error, client_not_found}`.
+
+### 10.4 Lifecycle
+
+- `start/2` is asynchronous: it returns when the options are valid, the connections are made in the
+  background. A name which is taken returns `{error, {already_started, Pid}}`.
+- `await_ready/2` returns `ok` when at least one connection of at least one target is up. It polls
+  the rows in the caller. After a timeout the client keeps trying; it is stopped with `stop/1`.
+- `stop/1,2` removes the name first (new calls get `client_not_found`), waits for the unary calls in
+  flight up to the timeout (5000 ms by default), then closes the connections. A stream which is
+  open fails with `closed`.
+- `set_targets/2` replaces the set and compares by `id`: a new target gets connections, a removed one
+  has its connections closed (the streams fail with `closed`, nothing is drained), a change of
+  `attrs` only does not touch the connections, and a change of host or port is a new pool.
+
+### 10.5 Errors
+
+The reasons of gun are returned as they are, and `egrpc_error:class/1` tells what they mean:
+
+| Class | Which | Retry |
+|---|---|---|
+| `{grpc, Name}` | the server answered with a status, or egrpc found the response invalid | by status |
+| `{transport, not_sent}` | `{stream_error, {goaway, _, _}}`, `{stream_error, {stream_error, refused_stream, _}}`, `{stream_error, closing}`, `{no_connection_available, _}` | any method |
+| `{transport, unknown}` | `closed`, `{down, _}`, `timeout`, other errors of a stream | idempotent methods |
+| `{local, Reason}` | the credentials, a hook, anything else | no |
+
+### 10.6 The rest of the release
+
+- `deadline` in the options of a call (milliseconds from the call): sent as `grpc-timeout`, no wait
+  goes past it, and the end is `{grpc_error, deadline_exceeded, _}`. It is turned into a time of
+  the monotonic clock once, before the interceptors, so all the attempts of a call share it.
+- `with_metadata => true` returns `{ok, Response, #{headers, trailers}}` for a unary call.
+- `http2 => #{keepalive, keepalive_tolerance, closing_timeout}` in the options of `open/3` and in
+  `conn_opts` of a client; `await_up/2` does not close the connection when it fails.
+
+### 10.7 Retries
+
+Made in `egrpc_client:unary/4` around the call, only with the `retry` option, not in an
+interceptor: the connection is chosen before the interceptors run, and `Next` of an interceptor can
+not choose another one (there is a `FIXME` for doing it as an interceptor).
+
+- A request which was not sent (`{transport, not_sent}`) is made again on another target, once, at
+  once, for any method, and it does not use the budget.
+- A call which may have been processed (`{transport, unknown}` or the status `unavailable`) is made
+  again only when the method has `idempotency_level` `IDEMPOTENT` or `NO_SIDE_EFFECTS` in the
+  `opts` of its `rpc_def` (gpb puts it there), up to `max_attempts` (3), after a wait of a random
+  time up to `initial_backoff * multiplier^(n-1)` (50 ms, 2, at most `max_backoff` of 1000 ms), and
+  not past the deadline.
+- The budget is for each target: `max_tokens` (100), a failure takes one, a success gives back
+  `token_ratio` (0.1), and nothing is retried while the target has half of `max_tokens` or fewer.
+- Streaming calls are not retried.
+
+### 10.8 Not built, and why
+
+| Not built | Why |
+|---|---|
+| Counting of streams against the number of concurrent streams | A stream which the server refuses (`refused_stream`) is `not_sent` and is retried on another connection. It can be done with the `event_handler` option of gun (`request_start`, `response_end`, `cancel`) which is exact whatever the user does with the stream value |
+| Active mode of streams (a relay process for each stream, messages `{egrpc_stream, Handle, ...}`, `{active, N}` flow control) | The passive API with `parse_msg/2` is enough for the one user (etcdgun_watcher) |
+| Resolvers (DNS, static, custom) | `set_targets/2` is the single entry for them, so they can be added without changing the rest; the key `resolver` is reserved |
+| Telemetry, hedging, scaling the size of a pool, TLS options for each target | Not needed yet |
+
+### 10.9 What the design relies on (read in gun 2.1.0 and tried against cowboy 2.12.0)
+
+- `gun_down` goes to the owner of the connection only. The holder of a stream gets
+  `{gun_error, Conn, Ref, closed | {closed, Reason}}` for every stream before it, whatever `retry` is.
+- With `retry => 0` (egrpc sets it), a request sent to a connection which received `GOAWAY` and has
+  streams in flight gets `{gun_error, Conn, Ref, closing}` at once, it does not hang.
+- `http2_opts => #{notify_settings_changed => true}` makes gun send the owner
+  `{gun_notify, Conn, settings_changed, Settings}` with `max_concurrent_streams`; gun itself does not
+  keep to it, a request above it is refused by the server with `refused_stream`.
+- `gun:open` from a process makes it the owner of the connection; a request to a connection which is
+  already gone returns a reference and no message, only the monitor of `gun:await` tells.
+
+### 10.10 Limits
+
+- A stream stays on its connection, and fails with `closed` when the connection is lost.
+- With gun 2.1.0 there is no event for `GOAWAY`: a connection which got one is skipped after the
+  first call which saw it, that call is retried when `retry` is set.
+- `egrpc_client` keeps a pool with the options it had when it started, `pool_size` and the options of
+  the connections can not be changed without stopping the client.
+- The cost of the row of a client (it holds the channel with the pipeline) is about 0.2 microseconds
+  for each lookup on one machine; a throughput of the whole path was not measured.
