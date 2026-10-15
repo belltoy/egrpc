@@ -18,7 +18,12 @@
     set_targets/1,
     stop_waits_for_calls/1,
     survives_a_crashed_client/1,
-    full_connection/1
+    full_connection/1,
+    retry_not_sent/1,
+    no_retry_without_idempotency/1,
+    retry_idempotent/1,
+    retry_budget/1,
+    retry_max_attempts/1
 ]).
 
 -define(NAME, egrpc_client_SUITE_client).
@@ -40,7 +45,12 @@ all() ->
         set_targets,
         stop_waits_for_calls,
         survives_a_crashed_client,
-        full_connection
+        full_connection,
+        retry_not_sent,
+        no_retry_without_idempotency,
+        retry_idempotent,
+        retry_budget,
+        retry_max_attempts
     ].
 
 init_per_suite(Config) ->
@@ -293,7 +303,117 @@ full_connection(_Config) ->
     ?assertMatch({ok, _}, ?CHECK(?NAME)),
     egrpc_fake_server:stop(Srv).
 
+%% A connection which got `GOAWAY' refuses the next call, which is made again on another target
+%% for any method, and the connection is skipped after it.
+retry_not_sent(_Config) ->
+    Counter = atomics:new(1, []),
+    Self = self(),
+    {ok, A} = egrpc_fake_server:start(fun(_) ->
+        Self ! {hit, a},
+        case atomics:add_get(Counter, 1, 1) of
+            1 -> [{sleep, 1500} | ok_actions()];
+            _ -> ok_actions()
+        end
+    end),
+    B = serve(b),
+    start([target(a, A), target(b, B)], #{balancer => pick_first, retry => #{}, pool_size => 1}),
+    ok = wait_ready(2),
+    Slow = spawn_call(),
+    timer:sleep(300),
+    [ConnPid] = ranch:procs(A, connections),
+    spawn(fun() -> catch sys:terminate(ConnPid, shutdown) end),
+    timer:sleep(300),
+    ?assertEqual([a], hits()),
+    ?assertMatch({ok, _}, ?CHECK(?NAME)),
+    %% the call was refused by gun, the server of `a' did not see it
+    ?assertEqual([b], hits()),
+    %% and the connection is not used again
+    ?assertMatch({ok, _}, ?CHECK(?NAME)),
+    ?assertEqual([b], hits()),
+    ?assertMatch({ok, _}, receive_call(Slow)),
+    [egrpc_fake_server:stop(R) || R <- [A, B]].
+
+%% The request may have been processed, a method which is not idempotent is not made again.
+no_retry_without_idempotency(_Config) ->
+    A = unavailable(a),
+    B = serve(b),
+    start([target(a, A), target(b, B)], #{balancer => pick_first, retry => #{}}),
+    ok = wait_ready(2),
+    ?assertMatch({error, {grpc_error, unavailable, _}}, ?CHECK(?NAME)),
+    ?assertEqual([a], hits()),
+    [egrpc_fake_server:stop(R) || R <- [A, B]].
+
+retry_idempotent(_Config) ->
+    A = unavailable(a),
+    B = serve(b),
+    start([target(a, A), target(b, B)], #{balancer => pick_first, retry => #{}}),
+    ok = wait_ready(2),
+    ?assertMatch({ok, _}, idempotent_check(?NAME)),
+    ?assertEqual([a, b], hits()),
+    [egrpc_fake_server:stop(R) || R <- [A, B]].
+
+%% Every failure takes a token of the target, no retry is made when it has half of them or fewer.
+retry_budget(_Config) ->
+    A = unavailable(a),
+    B = serve(b),
+    start([target(a, A), target(b, B)], #{
+        balancer => pick_first,
+        retry => #{},
+        retry_budget => #{max_tokens => 4, token_ratio => 0.1}
+    }),
+    ok = wait_ready(2),
+    %% 4 tokens, 3 after the failure: a retry
+    ?assertMatch({ok, _}, idempotent_check(?NAME)),
+    ?assertEqual([a, b], hits()),
+    %% 2 tokens: not above half of them
+    ?assertMatch({error, {grpc_error, unavailable, _}}, idempotent_check(?NAME)),
+    ?assertEqual([a], hits()),
+    [egrpc_fake_server:stop(R) || R <- [A, B]].
+
+retry_max_attempts(_Config) ->
+    Servers = [unavailable(a), unavailable(b), unavailable(c)],
+    start([target(a, lists:nth(1, Servers)), target(b, lists:nth(2, Servers)),
+           target(c, lists:nth(3, Servers))],
+          #{balancer => pick_first, retry => #{max_attempts => 2}}),
+    ok = wait_ready(3),
+    ?assertMatch({error, {grpc_error, unavailable, _}}, idempotent_check(?NAME)),
+    ?assertEqual([a, b], hits()),
+    [egrpc_fake_server:stop(R) || R <- Servers].
+
 %%--------------------------------------------------------------------
+
+ok_actions() ->
+    egrpc_fake_server:ok(egrpc_test_util:health_response('SERVING')).
+
+%% A server which answers `unavailable' to every call.
+unavailable(Tag) ->
+    Self = self(),
+    {ok, Ref} = egrpc_fake_server:start(fun(_) ->
+        Self ! {hit, Tag},
+        egrpc_fake_server:status(14, <<"unavailable">>)
+    end),
+    Ref.
+
+%% The health check as a method which is marked idempotent.
+idempotent_check(Client) ->
+    RpcDef0 = egrpc_health_pb:find_rpc_def('grpc.health.v1.Health', 'Check'),
+    RpcDef = RpcDef0#{opts => [{idempotency_level, 'IDEMPOTENT'}]},
+    Grpc = #{
+        rpc_def => RpcDef,
+        path => <<"/grpc.health.v1.Health/Check">>,
+        pb_module => egrpc_health_pb,
+        service_name => 'grpc.health.v1.Health'
+    },
+    egrpc_stub:unary(Client, #{service => <<"s">>}, Grpc, #{}).
+
+spawn_call() ->
+    Self = self(),
+    Ref = make_ref(),
+    spawn_link(fun() -> Self ! {Ref, ?CHECK(?NAME)} end),
+    Ref.
+
+receive_call(Ref) ->
+    receive {Ref, Result} -> Result after 5000 -> ct:fail(no_result) end.
 
 match(Expected, Expected) -> true;
 match(_, _) -> false.

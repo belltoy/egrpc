@@ -24,7 +24,28 @@
 %% - `reconnect_backoff': `#{initial, max, multiplier, jitter}' in milliseconds, `1000', `30000',
 %%   `1.6' and `0.2' by default;
 %% - `conn_opts': `interceptors', `call_credentials', `codec', `info', `gun_opts' and `http2' of
-%%   `egrpc_stub:open/3'.
+%%   `egrpc_stub:open/3';
+%% - `retry': `#{max_attempts, initial_backoff, max_backoff, multiplier}', `3', `50', `1000' and `2'
+%%   by default (milliseconds). Without it a call is made once. See "Retries" below;
+%% - `retry_budget': `#{max_tokens, token_ratio}', `100' and `0.1' by default, only with `retry'.
+%%
+%% == Retries ==
+%%
+%% A unary call is made again on another target when the request was not sent (`{transport,
+%% not_sent}' of `egrpc_error:class/1': the server went away with `GOAWAY', refused the stream, or
+%% gun refused it because the connection is closing). That is done once for a call, at once, and
+%% it does not use the budget.
+%%
+%% When the request may have been processed (`{transport, unknown}', or the status `unavailable')
+%% the call is made again only when the method is `IDEMPOTENT' or `NO_SIDE_EFFECTS' in its proto,
+%% up to `max_attempts', after a wait of a random time up to `initial_backoff * multiplier^(n-1)'
+%% (at most `max_backoff'). The calls of a target share a budget: a failure takes one token and a
+%% success gives back `token_ratio', and nothing is retried while the target has half of
+%% `max_tokens' or fewer. The `deadline' of the call is shared by all the attempts.
+%%
+%% FIXME: this is done around the call and not in an interceptor because the connection is chosen
+%% before the interceptors run, and `Next' of an interceptor can not choose another one. An
+%% interceptor which can would need `Next' to take `excluded'.
 %%
 %% The options of a call: `excluded' is a list of ids of targets which are not used, `hint' is
 %% `#{target => Id}', and the ones of `egrpc_stub:opts()'.
@@ -54,10 +75,12 @@
     pool_size => pos_integer(),
     balancer => egrpc_balancer:strategy(),
     reconnect_backoff => egrpc_pool:backoff_opts(),
-    conn_opts => egrpc_stub:conn_opts()
+    conn_opts => egrpc_stub:conn_opts(),
+    retry => map(),
+    retry_budget => map()
 }.
 
--define(START_OPTS, [targets, pool_size, balancer, reconnect_backoff, conn_opts]).
+-define(START_OPTS, [targets, pool_size, balancer, reconnect_backoff, conn_opts, retry, retry_budget]).
 -define(DEFAULT_POOL_SIZE, 4).
 
 %%--------------------------------------------------------------------
@@ -188,17 +211,114 @@ ready(Name) ->
 %% Calls, from `egrpc_stub'
 
 %% @private
-unary(Name, Request, Grpc, Opts) ->
+unary(Name, Request, Grpc, Opts0) ->
+    %% The deadline is the same for every attempt.
+    Opts = egrpc_stream:with_deadline(Opts0),
+    case retry_config(Name) of
+        undefined -> attempt(Name, Request, Grpc, Opts, undefined, [], 1, false, undefined);
+        Retry -> attempt(Name, Request, Grpc, Opts, Retry, [], 1, false, undefined)
+    end.
+
+%% Only the retry options of the row of the client are copied.
+retry_config(Name) ->
+    ets:lookup_element(egrpc_index, Name, 6, undefined).
+
+%% One attempt of a unary call. `Excluded' are the targets which failed, `Transparent' is whether
+%% the retry for a request which was not sent was used, and `Last' is the error of the attempt
+%% before, which is what the call returns when there is no other target to try.
+attempt(Name, Request, Grpc, Opts0, Retry, Excluded, N, Transparent, Last) ->
+    Opts = case Excluded of
+        [] -> Opts0;
+        _ -> Opts0#{excluded => Excluded ++ maps:get(excluded, Opts0, [])}
+    end,
     case checkout(Name, Opts, true) of
-        {ok, Channel, Release, _Target} ->
-            try
+        {ok, Channel, Release, Target} ->
+            Result = try
                 egrpc_stub:unary(Channel, Request, Grpc, Opts)
             after
                 release(Release)
-            end;
-        {error, _} = Error ->
-            Error
+            end,
+            after_attempt(Result, Target, Name, Request, Grpc, Opts0, Retry, Excluded, N,
+                          Transparent);
+        {error, _} = Error when Last =:= undefined ->
+            Error;
+        {error, _} ->
+            %% no other target to try: the error of the call is the one of the target
+            Last
     end.
+
+after_attempt({ok, _} = Result, Target, _Name, _Req, _Grpc, _Opts, Retry, _Excluded, _N, _T) ->
+    ok = budget_success(Target, Retry),
+    Result;
+after_attempt({ok, _, _} = Result, Target, _Name, _Req, _Grpc, _Opts, Retry, _Excluded, _N, _T) ->
+    ok = budget_success(Target, Retry),
+    Result;
+after_attempt({error, _} = Error, _Target, _Name, _Req, _Grpc, _Opts, undefined, _Excl, _N, _T) ->
+    Error;
+after_attempt({error, Reason} = Error, {Id, _, _} = Target,
+              Name, Request, Grpc, Opts, Retry, Excluded, N, Transparent) ->
+    case egrpc_error:class(Reason) of
+        {transport, not_sent} when not Transparent ->
+            %% the server did not process it: any method, once, at once
+            attempt(Name, Request, Grpc, Opts, Retry, [Id | Excluded], N, true, Error);
+        Class ->
+            Retryable = Class =:= {transport, unknown} orelse Class =:= {grpc, unavailable},
+            case Retryable andalso idempotent(Grpc) andalso N < maps:get(max_attempts, Retry) of
+                false ->
+                    Error;
+                true ->
+                    case budget_failure(Target, Retry) andalso wait(N, Retry, Opts) of
+                        true ->
+                            attempt(Name, Request, Grpc, Opts, Retry, [Id | Excluded], N + 1,
+                                    Transparent, Error);
+                        false ->
+                            Error
+                    end
+            end
+    end.
+
+%% The `Grpc' map is given by the user, so what it lacks is not an error here.
+-dialyzer({no_match, idempotent/1}).
+idempotent(#{rpc_def := #{opts := Opts}}) when is_list(Opts) ->
+    lists:member(proplists:get_value(idempotency_level, Opts, undefined),
+                 ['IDEMPOTENT', 'NO_SIDE_EFFECTS']);
+idempotent(_) ->
+    false.
+
+%% Wait before the attempt after `N': a random time up to the backoff, which does not go past the
+%% deadline. `false' when the deadline has passed.
+wait(N, #{initial_backoff := Initial, max_backoff := Max, multiplier := Mult}, Opts) ->
+    Cap = min(Max, round(Initial * math:pow(Mult, N - 1))),
+    Delay = rand:uniform(Cap + 1) - 1,
+    case maps:get(deadline_at, Opts, undefined) of
+        undefined ->
+            timer:sleep(Delay),
+            true;
+        DeadlineAt ->
+            Left = DeadlineAt - erlang:monotonic_time(millisecond),
+            case Left > Delay of
+                true ->
+                    timer:sleep(Delay),
+                    true;
+                false ->
+                    false
+            end
+    end.
+
+%% The tokens of the retries of a target are in thousandths in its counters.
+budget_success(_Target, undefined) ->
+    ok;
+budget_success({_Id, Counters, Size}, #{budget := #{max_tokens := Max, token_ratio := Ratio}}) ->
+    Slot = 2 * Size + 1,
+    New = min(Max * 1000, counters:get(Counters, Slot) + round(Ratio * 1000)),
+    counters:put(Counters, Slot, New).
+
+%% Take a token for a failure, and tell whether the target has enough left for a retry.
+budget_failure({_Id, Counters, Size}, #{budget := #{max_tokens := Max}}) ->
+    Slot = 2 * Size + 1,
+    New = max(0, counters:get(Counters, Slot) - 1000),
+    ok = counters:put(Counters, Slot, New),
+    New > Max * 1000 div 2.
 
 %% @private
 server_streaming(Name, Request, Grpc, Opts) ->
@@ -364,11 +484,15 @@ init(Name) ->
     {ok, {_, Opts, _, _, _}} = egrpc_registry:lookup(Name),
     ConnOpts = maps:get(conn_opts, Opts),
     Template = egrpc_stub:client_channel(ConnOpts),
+    Retry = case maps:get(retry, Opts, undefined) of
+        undefined -> undefined;
+        RetryOpts -> RetryOpts#{budget => maps:get(retry_budget, Opts)}
+    end,
     ok = egrpc_registry:set_client(Name, self()),
     State = #state{
         name = Name,
         atomics = atomics:new(1, []),
-        config = {Template, maps:get(balancer, Opts), undefined}
+        config = {Template, maps:get(balancer, Opts), Retry}
     },
     {ok, State, {continue, init_pools}}.
 
@@ -450,7 +574,11 @@ start_pool(Name, Opts, PoolSup, #{id := Id} = Target) ->
         target => Target,
         pool_size => maps:get(pool_size, Opts),
         gun_opts => egrpc_stub:gun_opts(ConnOpts),
-        reconnect_backoff => maps:get(reconnect_backoff, Opts)
+        reconnect_backoff => maps:get(reconnect_backoff, Opts),
+        retry_budget => case maps:is_key(retry, Opts) of
+            true -> maps:get(retry_budget, Opts);
+            false -> undefined
+        end
     },
     Spec = #{
         id => Id,
@@ -528,13 +656,30 @@ validate(Opts) ->
         Other -> error({invalid_option, {balancer, Other}})
     end,
     Backoff = maps:merge(egrpc_pool:default_backoff(), maps:get(reconnect_backoff, Opts, #{})),
-    #{
+    Config = #{
         targets => validate_targets(maps:get(targets, Opts, [])),
         pool_size => PoolSize,
         balancer => Balancer,
         reconnect_backoff => Backoff,
         conn_opts => maps:get(conn_opts, Opts, #{})
-    }.
+    },
+    case maps:find(retry, Opts) of
+        {ok, Retry} when is_map(Retry) ->
+            Config#{
+                retry => maps:merge(
+                    #{max_attempts => 3, initial_backoff => 50, max_backoff => 1000, multiplier => 2},
+                    Retry
+                ),
+                retry_budget => maps:merge(
+                    #{max_tokens => 100, token_ratio => 0.1},
+                    maps:get(retry_budget, Opts, #{})
+                )
+            };
+        {ok, NotAMap} ->
+            error({invalid_option, {retry, NotAMap}});
+        error ->
+            Config
+    end.
 
 validate_targets(Targets) when is_list(Targets) ->
     Valid = [validate_target(T) || T <- Targets],

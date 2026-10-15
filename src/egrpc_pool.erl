@@ -33,7 +33,9 @@
     target := #{id := term(), host := string(), port := inet:port_number(), attrs => map()},
     pool_size := pos_integer(),
     gun_opts := gun:opts(),
-    reconnect_backoff := backoff_opts()
+    reconnect_backoff := backoff_opts(),
+    %% the tokens of the retries of the target, `max_tokens' of it to start with
+    retry_budget := undefined | #{max_tokens := pos_integer(), token_ratio := number()}
 }.
 
 -record(c, {
@@ -83,7 +85,8 @@ init(#{
     target := #{id := Id, host := Host, port := Port} = Target,
     pool_size := Size,
     gun_opts := GunOpts0,
-    reconnect_backoff := Backoff
+    reconnect_backoff := Backoff,
+    retry_budget := Budget
 }) ->
     process_flag(trap_exit, true),
     %% The pool does the reconnect, gun must not. The settings of the server tell how many streams
@@ -99,8 +102,15 @@ init(#{
         size = Size,
         gun_opts = GunOpts,
         backoff = Backoff,
-        counters = counters:new(2 * Size, [write_concurrency])
+        counters = counters:new(2 * Size + 1, [write_concurrency])
     },
+    case Budget of
+        #{max_tokens := MaxTokens} ->
+            %% in thousandths of a token, see `egrpc_client'
+            counters:put(State0#state.counters, 2 * Size + 1, MaxTokens * 1000);
+        undefined ->
+            ok
+    end,
     State = lists:foldl(fun(Idx, S) -> open(Idx, S) end, State0, lists:seq(1, Size)),
     publish(State),
     {ok, State}.
