@@ -247,13 +247,15 @@ await_up(#channel{} = Channel) ->
     await_up(Channel, 5000).
 
 %% @doc Await until the channel is up, for at most `Timeout' ms.
+%%
+%% The connection is not closed when it fails, the caller decides: close the channel which `open/3'
+%% returned, or await again.
 -spec await_up(channel(), timeout()) -> {ok, channel()} | {error, any()}.
 await_up(#channel{conn = #conn{conn_pid = Pid}} = Channel, Timeout) ->
     case gun:await_up(Pid, Timeout) of
         {ok, http2} ->
             {ok, Channel};
         {error, Reason} ->
-            gun:shutdown(Pid),
             {error, Reason}
     end.
 

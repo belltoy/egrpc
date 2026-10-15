@@ -11,7 +11,8 @@
     derived_channel_can_not_close/1,
     original_closes_the_connection/1,
     await_up_with_a_timeout/1,
-    await_up_of_a_closed_port/1
+    await_up_of_a_closed_port/1,
+    await_up_failure_keeps_the_connection/1
 ]).
 
 -define(CHECK(Ch), egrpc_grpc_health_v1_health_client:check(Ch, #{service => <<"s">>})).
@@ -23,7 +24,8 @@ all() ->
         derived_channel_can_not_close,
         original_closes_the_connection,
         await_up_with_a_timeout,
-        await_up_of_a_closed_port
+        await_up_of_a_closed_port,
+        await_up_failure_keeps_the_connection
     ].
 
 init_per_suite(Config) ->
@@ -126,3 +128,16 @@ await_up_of_a_closed_port(Config) ->
     ok = egrpc_fake_server:stop(Ref),
     {ok, Ch} = egrpc_stub:open("localhost", Port, #{}),
     ?assertMatch({error, _}, egrpc_stub:await_up(Ch, 2000)).
+
+%% A failed `await_up' does not close the connection: gun keeps retrying and the caller decides.
+await_up_failure_keeps_the_connection(Config) ->
+    Ref = ?config(server, Config),
+    Port = egrpc_fake_server:port(Ref),
+    ok = egrpc_fake_server:stop(Ref),
+    {ok, Ch} = egrpc_stub:open("localhost", Port, #{gun_opts => #{retry => 10, retry_timeout => 100}}),
+    try
+        ?assertEqual({error, timeout}, egrpc_stub:await_up(Ch, 500)),
+        ?assert(is_process_alive(egrpc_stub:conn_pid(Ch)))
+    after
+        egrpc_stub:close(Ch, true)
+    end.
