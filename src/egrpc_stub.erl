@@ -96,7 +96,12 @@
     %% How long to wait for each message of the response of a unary call, in milliseconds, 5000
     %% by default. It is not a deadline of the whole call and it is not sent to the server. The
     %% streaming calls take the timeout of every receive as an argument.
-    timeout => timeout()
+    timeout => timeout(),
+    %% How long the whole call may take, in milliseconds from the call. It is sent to the server
+    %% as `grpc-timeout', no wait of the call goes past it, and the end of it is
+    %% `{error, {grpc_error, deadline_exceeded, _}}'. The attempts of a call share it. For a
+    %% streaming call it is sent, and the receives of `egrpc_stream' stop at it.
+    deadline => non_neg_integer()
 }.
 
 -type metadata() :: #{binary() => binary()}.

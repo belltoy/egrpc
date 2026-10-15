@@ -61,6 +61,9 @@
     chain :: #chain{},
     %% The state of every interceptor, by its position in the list.
     states = #{} :: egrpc_interceptor:states(),
+    %% The end of the deadline of the call, in `erlang:monotonic_time(millisecond)', set when the
+    %% request is sent.
+    deadline_at :: undefined | integer(),
     info :: term()
 }).
 
@@ -84,6 +87,10 @@
 
 %% The timeout of every wait for a message of a unary call, `timeout' in the call options.
 -define(DEFAULT_TIMEOUT, 5000).
+
+%% What a call returns when its `deadline' has passed.
+-define(DEADLINE_EXCEEDED,
+        {grpc_error, deadline_exceeded, <<"The deadline of the call has passed">>}).
 
 %% The headers of every request, the `content-type' is the one of the codec.
 -define(DEFAULT_HEADERS, #{
@@ -139,7 +146,8 @@ grpc_service(#stream{grpc = #{service_name := Service}}) -> Service.
 %%--------------------------------------------------------------------
 %% Calls
 
-unary(#stream{chain = #chain{unary = Wraps}} = Stream0, Request0, Opts0) ->
+unary(#stream{chain = #chain{unary = Wraps}} = Stream0, Request0, Opts00) ->
+    Opts0 = with_deadline(Opts00),
     Next0 =
         fun(#stream{} = Stream1, Req, Opts) ->
             maybe
@@ -154,7 +162,8 @@ unary(#stream{chain = #chain{unary = Wraps}} = Stream0, Request0, Opts0) ->
     % eqwalizer:ignore
     F(Stream0, Request0, Opts0).
 
-server_streaming(#stream{} = Stream0, Request, Opts) ->
+server_streaming(#stream{} = Stream0, Request, Opts0) ->
+    Opts = with_deadline(Opts0),
     maybe
         {ok, Stream1} ?= init_req(Stream0, Opts),
         {ok, Stream2} ?= send_msg(Stream1, Request, fin),
@@ -162,10 +171,41 @@ server_streaming(#stream{} = Stream0, Request, Opts) ->
     end.
 
 client_streaming(#stream{} = Stream, Opts) ->
-    init_req(Stream, Opts).
+    init_req(Stream, with_deadline(Opts)).
 
 bidi_streaming(#stream{} = Stream, Opts) ->
-    init_req(Stream, Opts).
+    init_req(Stream, with_deadline(Opts)).
+
+%% The `deadline' option, relative and in milliseconds, becomes a time of the monotonic clock once,
+%% before the interceptors, so that every attempt of a call has the same end. It is in the options
+%% which the interceptors pass on as `deadline_at'.
+with_deadline(#{deadline_at := _} = Opts) ->
+    Opts;
+with_deadline(#{deadline := Ms} = Opts) when is_integer(Ms), Ms >= 0 ->
+    Opts#{deadline_at => erlang:monotonic_time(millisecond) + Ms};
+with_deadline(Opts) ->
+    Opts.
+
+%% The milliseconds which are left of the deadline, `undefined' when there is none.
+remaining(undefined) -> undefined;
+remaining(DeadlineAt) -> DeadlineAt - erlang:monotonic_time(millisecond).
+
+%% `gun:await/3' which does not wait past the deadline of the call.
+await(#stream{channel = Channel, stream_ref = SRef, deadline_at = DeadlineAt}, Timeout) ->
+    ConnPid = egrpc_stub:conn_pid(Channel),
+    case remaining(DeadlineAt) of
+        undefined ->
+            gun:await(ConnPid, SRef, Timeout);
+        Left when Left =< 0 ->
+            {error, ?DEADLINE_EXCEEDED};
+        Left when Timeout =:= infinity; Left < Timeout ->
+            case gun:await(ConnPid, SRef, Left) of
+                {error, timeout} -> {error, ?DEADLINE_EXCEEDED};
+                Other -> Other
+            end;
+        _ ->
+            gun:await(ConnPid, SRef, Timeout)
+    end.
 
 %%--------------------------------------------------------------------
 %% The phases of a call. The public ones go through the hooks of the interceptors, `*0' is what
@@ -174,7 +214,17 @@ bidi_streaming(#stream{} = Stream, Opts) ->
 init_req(#stream{chain = #chain{init_req = F}} = Stream, Opts) ->
     F(Stream, Opts).
 
-init_req0(#stream{channel = Channel, grpc = #{path := Path}} = Stream, Opts) ->
+init_req0(#stream{} = Stream, Opts) ->
+    DeadlineAt = maps:get(deadline_at, Opts, undefined),
+    case remaining(DeadlineAt) of
+        Left when Left =/= undefined, Left =< 0 ->
+            %% nothing was sent
+            {error, ?DEADLINE_EXCEEDED};
+        Left ->
+            init_req0(Stream#stream{deadline_at = DeadlineAt}, Opts, Left)
+    end.
+
+init_req0(#stream{channel = Channel, grpc = #{path := Path}} = Stream, Opts, Left) ->
     case call_credentials(Stream) of
         {ok, CredsMetadata} ->
             ConnPid = egrpc_stub:conn_pid(Channel),
@@ -185,7 +235,12 @@ init_req0(#stream{channel = Channel, grpc = #{path := Path}} = Stream, Opts) ->
                 Metadata
             ),
             ContentType = egrpc_codec:content_type(egrpc_stub:codec(Channel)),
-            Defaults = maps:put(<<"content-type">>, ContentType, ?DEFAULT_HEADERS),
+            Defaults0 = maps:put(<<"content-type">>, ContentType, ?DEFAULT_HEADERS),
+            Defaults =
+                case Left of
+                    undefined -> Defaults0;
+                    _ -> Defaults0#{<<"grpc-timeout">> => egrpc_grpc:timeout_header(Left)}
+                end,
             Headers = maps:merge(CustomMetadata, Defaults),
             SRef = gun:post(ConnPid, Path, Headers),
             {ok, Stream#stream{stream_ref = SRef}};
@@ -231,8 +286,7 @@ close_send0(#stream{} = Stream) ->
     {ok, Stream}.
 
 recv_streaming_fin(#stream{} = Stream, Timeout) ->
-    ConnPid = egrpc_stub:conn_pid(Stream#stream.channel),
-    case gun:await(ConnPid, Stream#stream.stream_ref, Timeout) of
+    case await(Stream, Timeout) of
         {trailers, Trailers} -> {ok, Trailers};
         {error, _} = Error -> Error;
         _ -> {error, {grpc_error, internal, <<"Unexpected response while waiting for trailers">>}}
@@ -242,10 +296,9 @@ recv_streaming_fin(#stream{} = Stream, Timeout) ->
 recv_header(#stream{chain = #chain{recv_header = F}} = Stream, Timeout) ->
     F(Stream, Timeout).
 
-recv_header0(#stream{channel = Channel, stream_ref = SRef} = Stream, Timeout) ->
-    ConnPid = egrpc_stub:conn_pid(Channel),
+recv_header0(#stream{} = Stream, Timeout) ->
     Res =
-        case gun:await(ConnPid, SRef, Timeout) of
+        case await(Stream, Timeout) of
             {trailers, Trailers} -> egrpc_error:from_grpc_status(Trailers);
             {response, nofin, 200, _Headers} -> ok;
             {response, fin, 200, RespHeaders} -> egrpc_error:from_grpc_status(RespHeaders);
@@ -265,8 +318,7 @@ recv_header0(#stream{channel = Channel, stream_ref = SRef} = Stream, Timeout) ->
 recv_msg(#stream{chain = #chain{recv_msg = F}} = Stream, Timeout, Buf) ->
     F(Stream, Timeout, Buf).
 
-recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) ->
-    ConnPid = egrpc_stub:conn_pid(Stream#stream.channel),
+recv_msg0(#stream{decoder = Decoder} = Stream, Timeout, Buf) ->
     case egrpc_grpc:decode(identity, Decoder, Buf) of
         {ok, Msg, Rest} ->
             %% We have a complete message, return it.
@@ -275,7 +327,7 @@ recv_msg0(#stream{decoder = Decoder, stream_ref = SRef} = Stream, Timeout, Buf) 
             %% Error decoding the message, return the error.
             {error, Reason};
         more ->
-            case gun:await(ConnPid, SRef, Timeout) of
+            case await(Stream, Timeout) of
                 {data, fin, _} ->
                     %% We received a fin, but we still have more data to decode.
                     %% This is unexpected for a gRPC response, so we return an error.
@@ -338,6 +390,7 @@ recv_trailers(Stream, Timeout, Resp) ->
 
 %% A `grpc_error' is what egrpc itself or the server reported, the others (`timeout', the errors
 %% of gun, of a hook) are from the transport.
+error_kind(_Kind, ?DEADLINE_EXCEEDED) -> transport;
 error_kind(Kind, {grpc_error, _Name, _Message}) -> Kind;
 error_kind(_Kind, _Reason) -> transport.
 

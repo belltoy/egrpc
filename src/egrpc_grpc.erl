@@ -1,6 +1,6 @@
 -module(egrpc_grpc).
 
--export([encode/2, decode/3]).
+-export([encode/2, decode/3, timeout_header/1]).
 
 -export_type([http_encoding/0]).
 
@@ -16,6 +16,23 @@ encode(gzip, Bin) ->
     <<1, Length:32, CompressedBin/binary>>;
 encode(Encoding, _) ->
     throw({error, {unknown_encoding, Encoding}}).
+
+%% @doc The value of the `grpc-timeout' header for a time in milliseconds.
+%%
+%% It is at most 8 digits and a unit. A time which does not fit in milliseconds is given in the
+%% next coarser unit, rounded down, so that the server never waits for longer than the client.
+-spec timeout_header(non_neg_integer()) -> binary().
+timeout_header(Ms) when Ms =< 99999999 ->
+    <<(integer_to_binary(Ms))/binary, "m">>;
+timeout_header(Ms) ->
+    timeout_header(Ms div 1000, [<<"S">>, <<"M">>, <<"H">>], [60, 60]).
+
+timeout_header(Value, [Unit], _) ->
+    <<(integer_to_binary(min(Value, 99999999)))/binary, Unit/binary>>;
+timeout_header(Value, [Unit | _], _) when Value =< 99999999 ->
+    <<(integer_to_binary(Value))/binary, Unit/binary>>;
+timeout_header(Value, [_ | Units], [Factor | Factors]) ->
+    timeout_header(Value div Factor, Units, Factors).
 
 -spec decode(http_encoding(), Decoder, binary()) -> Result when
     Decoder :: egrpc_codec:decoder(),
@@ -56,6 +73,20 @@ decode(_Encoding, _Decoder, <<_/binary>>) ->
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
+
+timeout_header_test() ->
+    ?assertEqual(<<"0m">>, timeout_header(0)),
+    ?assertEqual(<<"1500m">>, timeout_header(1500)),
+    ?assertEqual(<<"99999999m">>, timeout_header(99999999)),
+    %% more than 8 digits: seconds, rounded down
+    ?assertEqual(<<"100000S">>, timeout_header(100000000)),
+    ?assertEqual(<<"100000S">>, timeout_header(100000999)),
+    %% more than 8 digits of seconds: minutes, then hours
+    ?assertEqual(<<"1666666M">>, timeout_header(100000000 * 1000)),
+    ?assertEqual(<<"1666666H">>, timeout_header(6000000000 * 1000)),
+    %% the longest
+    ?assertEqual(<<"99999999H">>, timeout_header(99999999 * 3600 * 1000 * 2)).
+
 
 decode_test() ->
     Decoder = fun(<<"bad">>) -> error(badarg); (Bin) -> Bin end,

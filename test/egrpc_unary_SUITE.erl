@@ -25,6 +25,9 @@
     connection_closed/1,
     timeout_default/1,
     timeout_option/1,
+    deadline_header/1,
+    deadline_exceeded/1,
+    deadline_before_send/1,
     no_leftover_after_status/1,
     no_leftover_after_decode_failure/1,
     no_leftover_after_timeout/1,
@@ -53,6 +56,9 @@ all() ->
         connection_closed,
         timeout_default,
         timeout_option,
+        deadline_header,
+        deadline_exceeded,
+        deadline_before_send,
         no_leftover_after_status,
         no_leftover_after_decode_failure,
         no_leftover_after_timeout,
@@ -258,6 +264,50 @@ timeout_option(_Config) ->
     Elapsed = erlang:monotonic_time(millisecond) - T0,
     ?assert(Elapsed >= 250),
     ?assert(Elapsed < 2000),
+    done(Srv).
+
+%% The `deadline' is sent as `grpc-timeout', in milliseconds.
+deadline_header(_Config) ->
+    Srv = {_, Ch} = serve(egrpc_fake_server:ok(egrpc_test_util:health_response('SERVING'))),
+    ?assertMatch({ok, _}, ?CHECK(Ch, #{deadline => 2000})),
+    receive
+        {fake_server_request, #{headers := Headers}} ->
+            Value = maps:get(<<"grpc-timeout">>, Headers),
+            Size = byte_size(Value) - 1,
+            <<Digits:Size/binary, "m">> = Value,
+            Ms = binary_to_integer(Digits),
+            ?assert(Ms > 0 andalso Ms =< 2000)
+    after 1000 -> ct:fail(no_request)
+    end,
+    %% no deadline, no header
+    ?assertMatch({ok, _}, ?CHECK(Ch, #{})),
+    receive
+        {fake_server_request, #{headers := Headers2}} ->
+            ?assertNot(maps:is_key(<<"grpc-timeout">>, Headers2))
+    after 1000 -> ct:fail(no_request)
+    end,
+    done(Srv).
+
+%% The deadline ends the wait before `timeout' does, and the stream is cancelled.
+deadline_exceeded(_Config) ->
+    Srv = {_, Ch} = serve([{sleep, 1500} | egrpc_fake_server:ok(egrpc_test_util:health_response('SERVING'))]),
+    T0 = erlang:monotonic_time(millisecond),
+    ?assertMatch({error, {grpc_error, deadline_exceeded, _}},
+                 ?CHECK(Ch, #{deadline => 300, timeout => 5000})),
+    Elapsed = erlang:monotonic_time(millisecond) - T0,
+    ?assert(Elapsed >= 250),
+    ?assert(Elapsed < 1200),
+    ?assertEqual([], egrpc_test_util:stream_msgs(egrpc_test_util:drain(2500))),
+    done(Srv).
+
+%% A deadline which has passed before the call is sent: nothing is sent.
+deadline_before_send(_Config) ->
+    Srv = {_, Ch} = serve(egrpc_fake_server:ok(egrpc_test_util:health_response('SERVING'))),
+    ?assertMatch({error, {grpc_error, deadline_exceeded, _}}, ?CHECK(Ch, #{deadline => 0})),
+    receive
+        {fake_server_request, _} -> ct:fail(request_was_sent)
+    after 300 -> ok
+    end,
     done(Srv).
 
 %% After a status error everything of the stream was read.
