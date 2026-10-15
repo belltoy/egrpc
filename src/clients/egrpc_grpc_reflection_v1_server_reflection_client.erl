@@ -28,12 +28,12 @@ methods() ->
 
 %% @doc Call the bidi_streaming RPC method `ServerReflectionInfo' of service `grpc.reflection.v1.ServerReflection'.
 %% `Client' is a client name or a channel.
--spec server_reflection_info(egrpc:channel()) -> Result when
+-spec server_reflection_info(egrpc:client()) -> Result when
     Result :: egrpc_stub:bidi_streaming_ret().
 server_reflection_info(Client) ->
     server_reflection_info(Client, #{}).
 
--spec server_reflection_info(egrpc:channel(), Opts) -> Result when
+-spec server_reflection_info(egrpc:client(), Opts) -> Result when
     Result :: egrpc_stub:bidi_streaming_ret(),
     Opts :: egrpc_stub:opts().
 server_reflection_info(Client, Opts) ->

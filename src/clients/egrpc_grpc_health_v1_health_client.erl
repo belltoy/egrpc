@@ -44,14 +44,14 @@ methods() ->
 
 %% @doc Call the unary RPC method `Check' of service `grpc.health.v1.Health'.
 %% `Client' is a client name or a channel.
--spec check(egrpc:channel(), Request) -> Result when
+-spec check(egrpc:client(), Request) -> Result when
     Request :: egrpc_health_pb:'grpc.health.v1.HealthCheckRequest'(),
     Response :: egrpc_health_pb:'grpc.health.v1.HealthCheckResponse'(),
     Result :: egrpc_stub:unary_ret(Response).
 check(Client, Request) ->
     check(Client, Request, #{}).
 
--spec check(egrpc:channel(), Request, Opts) -> Result when
+-spec check(egrpc:client(), Request, Opts) -> Result when
     Result :: egrpc_stub:unary_ret(Response),
     Request :: egrpc_health_pb:'grpc.health.v1.HealthCheckRequest'(),
     Response :: egrpc_health_pb:'grpc.health.v1.HealthCheckResponse'(),
@@ -68,14 +68,14 @@ check(Client, Request, Opts) ->
 
 %% @doc Call the unary RPC method `List' of service `grpc.health.v1.Health'.
 %% `Client' is a client name or a channel.
--spec list(egrpc:channel(), Request) -> Result when
+-spec list(egrpc:client(), Request) -> Result when
     Request :: egrpc_health_pb:'grpc.health.v1.HealthListRequest'(),
     Response :: egrpc_health_pb:'grpc.health.v1.HealthListResponse'(),
     Result :: egrpc_stub:unary_ret(Response).
 list(Client, Request) ->
     list(Client, Request, #{}).
 
--spec list(egrpc:channel(), Request, Opts) -> Result when
+-spec list(egrpc:client(), Request, Opts) -> Result when
     Result :: egrpc_stub:unary_ret(Response),
     Request :: egrpc_health_pb:'grpc.health.v1.HealthListRequest'(),
     Response :: egrpc_health_pb:'grpc.health.v1.HealthListResponse'(),
@@ -92,13 +92,13 @@ list(Client, Request, Opts) ->
 
 %% @doc Call the server_streaming RPC method `Watch' of service `grpc.health.v1.Health'.
 %% `Client' is a client name or a channel.
--spec watch(egrpc:channel(), Request) -> Result when
+-spec watch(egrpc:client(), Request) -> Result when
     Request :: egrpc_health_pb:'grpc.health.v1.HealthCheckRequest'(),
     Result :: egrpc_stub:server_streaming_ret().
 watch(Client, Request) ->
     watch(Client, Request, #{}).
 
--spec watch(egrpc:channel(), Request, Opts) -> Result when
+-spec watch(egrpc:client(), Request, Opts) -> Result when
     Result :: egrpc_stub:server_streaming_ret(),
     Request :: egrpc_health_pb:'grpc.health.v1.HealthCheckRequest'(),
     Opts :: egrpc_stub:opts().
