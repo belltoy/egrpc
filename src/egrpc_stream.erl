@@ -12,6 +12,7 @@
     grpc_service/1,
     channel/1,
     stream_ref/1,
+    response_headers/1,
     info/1,
     info/2,
     set_info/2
@@ -64,6 +65,8 @@
     %% The end of the deadline of the call, in `erlang:monotonic_time(millisecond)', set when the
     %% request is sent.
     deadline_at :: undefined | integer(),
+    %% The headers of the response, set when they are received.
+    resp_headers = [] :: [{binary(), binary()}],
     info :: term()
 }).
 
@@ -127,6 +130,10 @@ grpc(#stream{grpc = Grpc}) -> Grpc.
 
 stream_ref(#stream{stream_ref = StreamRef}) -> StreamRef.
 
+%% @doc The headers of the response, `[]' until they are received.
+-spec response_headers(stream()) -> [{binary(), binary()}].
+response_headers(#stream{resp_headers = Headers}) -> Headers.
+
 -spec grpc_type(stream()) -> egrpc:grpc_type().
 grpc_type(#stream{grpc = #{rpc_def := #{input_stream := false, output_stream := false}}}) ->
     unary;
@@ -153,7 +160,11 @@ unary(#stream{chain = #chain{unary = Wraps}} = Stream0, Request0, Opts00) ->
             maybe
                 {ok, Stream2} ?= init_req(Stream1, Opts),
                 {ok, Stream3} ?= send_msg_or_cancel(Stream2, Req),
-                recv_unary_response(Stream3, maps:get(timeout, Opts, ?DEFAULT_TIMEOUT))
+                recv_unary_response(
+                    Stream3,
+                    maps:get(timeout, Opts, ?DEFAULT_TIMEOUT),
+                    maps:get(with_metadata, Opts, false)
+                )
             end
         end,
     %% The first interceptor is the outermost.
@@ -300,11 +311,12 @@ recv_header0(#stream{} = Stream, Timeout) ->
     Res =
         case await(Stream, Timeout) of
             {trailers, Trailers} -> egrpc_error:from_grpc_status(Trailers);
-            {response, nofin, 200, _Headers} -> ok;
+            {response, nofin, 200, Headers} -> {ok, Headers};
             {response, fin, 200, RespHeaders} -> egrpc_error:from_grpc_status(RespHeaders);
             {error, _} = Error -> Error
         end,
     case Res of
+        {ok, RespHeaders1} -> {ok, Stream#stream{resp_headers = RespHeaders1}};
         ok -> {ok, Stream};
         Other -> Other
     end.
@@ -353,7 +365,7 @@ recv_msg0(#stream{decoder = Decoder} = Stream, Timeout, Buf) ->
 -spec recv_response(stream(), timeout()) -> {ok, map()} | {error, any()}.
 recv_response(#stream{} = Stream, Timeout) ->
     case do_recv_response(Stream, Timeout) of
-        {ok, _Resp} = Ok -> Ok;
+        {ok, Resp, _Meta} -> {ok, Resp};
         {error, _Kind, Reason} -> {error, Reason}
     end.
 
@@ -364,7 +376,8 @@ recv_response(#stream{} = Stream, Timeout) ->
 %% - `transport': a timeout or an error of the connection, or of a hook, the stream may be alive.
 -type error_kind() :: status | local | transport.
 
--spec do_recv_response(stream(), timeout()) -> {ok, map()} | {error, error_kind(), any()}.
+-spec do_recv_response(stream(), timeout()) ->
+    {ok, map(), egrpc_stub:response_metadata()} | {error, error_kind(), any()}.
 do_recv_response(#stream{} = Stream, Timeout) ->
     case recv_header(Stream, Timeout) of
         {ok, Stream1} ->
@@ -381,7 +394,7 @@ recv_trailers(Stream, Timeout, Resp) ->
     case recv_streaming_fin(Stream, Timeout) of
         {ok, Trailers} ->
             case egrpc_error:from_grpc_status(Trailers) of
-                ok -> {ok, Resp};
+                ok -> {ok, Resp, #{headers => Stream#stream.resp_headers, trailers => Trailers}};
                 {error, Reason} -> {error, status, Reason}
             end;
         {error, Reason} ->
@@ -398,10 +411,12 @@ error_kind(_Kind, _Reason) -> transport.
 %% - success or a status of the server: nothing, gun deleted the stream and the response was read,
 %%   `gun:cancel/2' would make gun send a `gun_error' for a stream which it does not know;
 %% - any other error: cancel the stream and flush the mailbox, see `cancel_and_flush/1'.
-recv_unary_response(#stream{} = Stream, Timeout) ->
+recv_unary_response(#stream{} = Stream, Timeout, WithMetadata) ->
     case do_recv_response(Stream, Timeout) of
-        {ok, _Resp} = Ok ->
-            Ok;
+        {ok, Resp, Meta} when WithMetadata =:= true ->
+            {ok, Resp, Meta};
+        {ok, Resp, _Meta} ->
+            {ok, Resp};
         {error, status, Reason} ->
             {error, Reason};
         {error, _Local_or_transport, Reason} ->

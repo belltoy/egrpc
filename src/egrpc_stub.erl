@@ -51,6 +51,7 @@
     metadata/0,
     channel/0,
     unary_ret/1,
+    response_metadata/0,
 
     unary_interceptor/0,
     unary_interceptor_ret/0,
@@ -101,7 +102,10 @@
     %% as `grpc-timeout', no wait of the call goes past it, and the end of it is
     %% `{error, {grpc_error, deadline_exceeded, _}}'. The attempts of a call share it. For a
     %% streaming call it is sent, and the receives of `egrpc_stream' stop at it.
-    deadline => non_neg_integer()
+    deadline => non_neg_integer(),
+    %% A unary call returns `{ok, Response, Metadata}' instead of `{ok, Response}' when it is
+    %% `true'. The interceptors see the same result.
+    with_metadata => boolean()
 }.
 
 -type metadata() :: #{binary() => binary()}.
@@ -149,11 +153,18 @@
 -type next() :: fun((egrpc:stream(), request(), opts()) -> unary_interceptor_ret()).
 -type unary_interceptor() ::
     fun((egrpc:stream(), request(), opts(), next()) -> unary_interceptor_ret()).
--type unary_interceptor_ret() :: {ok, response()} | {error, egrpc_error:grpc_error() | any()}.
+-type unary_interceptor_ret() ::
+    {ok, response()} | {ok, response(), response_metadata()} | {error, egrpc_error:grpc_error() | any()}.
 -type request() :: map().
 -type response() :: map().
 
--type unary_ret(Res) :: {ok, Res} | {error, any()}.
+-type unary_ret(Res) :: {ok, Res} | {ok, Res, response_metadata()} | {error, any()}.
+
+%% The headers and trailers of the response of a unary call with `with_metadata'.
+-type response_metadata() :: #{
+    headers := [{binary(), binary()}],
+    trailers := [{binary(), binary()}]
+}.
 -type client_streaming_ret() :: streaming_ret().
 -type server_streaming_ret() :: streaming_ret().
 -type bidi_streaming_ret() :: streaming_ret().

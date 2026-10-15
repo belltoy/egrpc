@@ -25,6 +25,7 @@
     connection_closed/1,
     timeout_default/1,
     timeout_option/1,
+    with_metadata/1,
     deadline_header/1,
     deadline_exceeded/1,
     deadline_before_send/1,
@@ -56,6 +57,7 @@ all() ->
         connection_closed,
         timeout_default,
         timeout_option,
+        with_metadata,
         deadline_header,
         deadline_exceeded,
         deadline_before_send,
@@ -264,6 +266,24 @@ timeout_option(_Config) ->
     Elapsed = erlang:monotonic_time(millisecond) - T0,
     ?assert(Elapsed >= 250),
     ?assert(Elapsed < 2000),
+    done(Srv).
+
+%% `with_metadata' returns the headers and the trailers of the response.
+with_metadata(_Config) ->
+    Frame = egrpc_fake_server:frame(egrpc_test_util:health_response('SERVING')),
+    Actions = [
+        {headers, [{<<"content-type">>, <<"application/grpc">>}, {<<"x-header">>, <<"h">>}]},
+        {data, Frame},
+        {trailers, [{<<"grpc-status">>, <<"0">>}, {<<"x-trailer">>, <<"t">>}]}
+    ],
+    Srv = {_, Ch} = serve(Actions),
+    {ok, #{status := 'SERVING'}, #{headers := Headers, trailers := Trailers}} =
+        ?CHECK(Ch, #{with_metadata => true}),
+    ?assertEqual(<<"h">>, proplists:get_value(<<"x-header">>, Headers)),
+    ?assertEqual(<<"t">>, proplists:get_value(<<"x-trailer">>, Trailers)),
+    %% not by default
+    ?assertEqual({ok, #{status => 'SERVING'}}, ?CHECK(Ch, #{})),
+    %% an error is the same
     done(Srv).
 
 %% The `deadline' is sent as `grpc-timeout', in milliseconds.
