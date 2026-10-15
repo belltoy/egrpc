@@ -18,7 +18,7 @@
     invalid_option/1
 ]).
 
--define(CHECK(Ch, Opts), egrpc_grpc_health_v1_health_client:check(Ch, #{service => <<"s">>}, Opts)).
+-define(CHECK(Ch, Opts), egrpc_grpc_health_v1_health_stub:check(Ch, #{service => <<"s">>}, Opts)).
 
 all() ->
     [
@@ -43,12 +43,11 @@ end_per_suite(_Config) ->
 
 with_channel(Handler, Opts, Fun) ->
     {ok, Ref} = egrpc_fake_server:start(Handler),
-    {ok, Ch0} = egrpc_stub:open("localhost", egrpc_fake_server:port(Ref), Opts),
-    {ok, Ch} = egrpc_stub:await_up(Ch0),
+    Ch = egrpc_test_util:open(egrpc_fake_server:port(Ref), Opts),
     try
         Fun(Ch)
     after
-        egrpc_stub:close(Ch, true),
+        egrpc_test_util:close(Ch),
         egrpc_fake_server:stop(Ref)
     end.
 
@@ -62,14 +61,14 @@ request_headers() ->
     end.
 
 sent_in_the_request(_Config) ->
-    Cred = fun(_Stream) -> {ok, #{<<"token">> => <<"t1">>}} end,
+    Cred = fun(_Info) -> {ok, #{<<"token">> => <<"t1">>}} end,
     with_channel(ok_handler(), #{call_credentials => Cred}, fun(Ch) ->
         ?assertMatch({ok, _}, ?CHECK(Ch, #{})),
         ?assertEqual(<<"t1">>, maps:get(<<"token">>, request_headers()))
     end).
 
 call_metadata_takes_precedence(_Config) ->
-    Cred = fun(_Stream) -> {ok, #{<<"token">> => <<"from-credentials">>, <<"x">> => <<"1">>}} end,
+    Cred = fun(_Info) -> {ok, #{<<"token">> => <<"from-credentials">>, <<"x">> => <<"1">>}} end,
     with_channel(ok_handler(), #{call_credentials => Cred}, fun(Ch) ->
         ?assertMatch({ok, _}, ?CHECK(Ch, #{metadata => #{<<"token">> => <<"from-call">>}})),
         Headers = request_headers(),
@@ -78,7 +77,7 @@ call_metadata_takes_precedence(_Config) ->
     end).
 
 reserved_prefix_is_dropped(_Config) ->
-    Cred = fun(_Stream) -> {ok, #{<<"grpc-reserved">> => <<"v">>, <<"ok">> => <<"v">>}} end,
+    Cred = fun(_Info) -> {ok, #{<<"grpc-reserved">> => <<"v">>, <<"ok">> => <<"v">>}} end,
     with_channel(ok_handler(), #{call_credentials => Cred}, fun(Ch) ->
         ?assertMatch({ok, _}, ?CHECK(Ch, #{})),
         Headers = request_headers(),
@@ -88,7 +87,7 @@ reserved_prefix_is_dropped(_Config) ->
 
 %% Nothing is sent when the credentials are not available.
 error_is_not_sent(_Config) ->
-    Cred = fun(_Stream) -> {error, no_token} end,
+    Cred = fun(_Info) -> {error, no_token} end,
     with_channel(fun(_) -> ct:fail(request_was_sent) end, #{call_credentials => Cred}, fun(Ch) ->
         ?assertEqual({error, {call_credentials, no_token}}, ?CHECK(Ch, #{})),
         receive
@@ -98,13 +97,13 @@ error_is_not_sent(_Config) ->
     end).
 
 invalid_return_raises(_Config) ->
-    Cred = fun(_Stream) -> ok end,
+    Cred = fun(_Info) -> ok end,
     with_channel(ok_handler(), #{call_credentials => Cred}, fun(Ch) ->
         ?assertError({invalid_call_credentials, ok}, ?CHECK(Ch, #{}))
     end).
 
 exception_is_not_caught(_Config) ->
-    Cred = fun(_Stream) -> error(boom) end,
+    Cred = fun(_Info) -> error(boom) end,
     with_channel(ok_handler(), #{call_credentials => Cred}, fun(Ch) ->
         ?assertError(boom, ?CHECK(Ch, #{}))
     end).
@@ -112,18 +111,18 @@ exception_is_not_caught(_Config) ->
 %% An interceptor which refreshes the token and calls `Next' again: the credentials are read again.
 called_again_on_retry(_Config) ->
     put(token, <<"old">>),
-    Cred = fun(_Stream) -> {ok, #{<<"token">> => get(token)}} end,
+    Cred = fun(_Info) -> {ok, #{<<"token">> => get(token)}} end,
     Handler = fun(#{headers := #{<<"token">> := Token}}) ->
         case Token of
             <<"old">> -> egrpc_fake_server:status(16, <<"expired">>);
             <<"new">> -> egrpc_fake_server:ok(egrpc_test_util:health_response('SERVING'))
         end
     end,
-    Refresh = fun(Stream, Req, Opts, Next) ->
-        case Next(Stream, Req, Opts) of
+    Refresh = fun(Call, Req, Next) ->
+        case Next(Call, Req) of
             {error, {grpc_error, unauthenticated, _}} ->
                 put(token, <<"new">>),
-                Next(Stream, Req, Opts);
+                Next(Call, Req);
             Other ->
                 Other
         end
@@ -133,12 +132,12 @@ called_again_on_retry(_Config) ->
     end).
 
 derived_channel_has_its_own(_Config) ->
-    A = fun(_Stream) -> {ok, #{<<"token">> => <<"a">>}} end,
-    B = fun(_Stream) -> {ok, #{<<"token">> => <<"b">>}} end,
+    A = fun(_Info) -> {ok, #{<<"token">> => <<"a">>}} end,
+    B = fun(_Info) -> {ok, #{<<"token">> => <<"b">>}} end,
     with_channel(ok_handler(), #{call_credentials => A}, fun(Ch) ->
-        Derived = egrpc_stub:derive(Ch, #{call_credentials => B}),
-        Cleared = egrpc_stub:derive(Ch, #{call_credentials => undefined}),
-        Kept = egrpc_stub:derive(Derived, #{info => x}),
+        Derived = egrpc_channel:derive(Ch, #{call_credentials => B}),
+        Cleared = egrpc_channel:derive(Ch, #{call_credentials => undefined}),
+        Kept = egrpc_channel:derive(Derived, #{info => x}),
         ?assertMatch({ok, _}, ?CHECK(Derived, #{})),
         ?assertEqual(<<"b">>, maps:get(<<"token">>, request_headers())),
         ?assertMatch({ok, _}, ?CHECK(Ch, #{})),
@@ -149,19 +148,19 @@ derived_channel_has_its_own(_Config) ->
         ?assertEqual(<<"b">>, maps:get(<<"token">>, request_headers()))
     end).
 
-%% Once, when the stream is opened.
+%% Once, when the stream is opened (`egrpc_credentials').
 streaming_call(_Config) ->
     Pid = self(),
-    Cred = fun(Stream) ->
-        Pid ! {credentials, egrpc_stream:grpc_method(Stream)},
+    Cred = fun(#{method := Method}) ->
+        Pid ! {credentials, Method},
         {ok, #{<<"token">> => <<"s">>}}
     end,
     with_channel(ok_handler(), #{call_credentials => Cred}, fun(Ch) ->
-        {ok, Stream} = egrpc_grpc_health_v1_health_client:watch(Ch, #{service => <<"s">>}),
+        {ok, Stream} = egrpc_grpc_health_v1_health_stub:watch(Ch, #{service => <<"s">>}),
         {ok, _} = egrpc_stream:recv_header(Stream, 2000),
         ?assertEqual(<<"s">>, maps:get(<<"token">>, request_headers())),
         receive
-            {credentials, 'Watch'} -> ok
+            {credentials, <<"/grpc.health.v1.Health/Watch">>} -> ok
         after 1000 -> ct:fail(credentials_not_called)
         end,
         receive
@@ -171,5 +170,6 @@ streaming_call(_Config) ->
     end).
 
 invalid_option(_Config) ->
-    ?assertError({invalid_call_credentials, not_a_fun},
-                 egrpc_stub:open("localhost", 1, #{call_credentials => not_a_fun})).
+    ?assertError({invalid_call_credentials, "not_a_fun"},
+                 egrpc_channel:start(not_started, #{target => "localhost:1",
+                                                    call_credentials => "not_a_fun"})).

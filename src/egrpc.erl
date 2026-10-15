@@ -2,7 +2,7 @@
 
 -export_type([
     client/0,
-    client_name/0,
+    channel_name/0,
     channel/0,
     stream/0,
     grpc/0,
@@ -13,9 +13,11 @@
     grpc_error/0
 ]).
 
--type client() :: client_name() | channel().
--type client_name() :: atom().
--type channel() :: egrpc_stub:channel().
+%% The name of a channel (`egrpc_channel:start/2'), or the channel itself which
+%% `egrpc_channel:derive/2' returned.
+-type client() :: channel_name() | channel().
+-type channel_name() :: atom().
+-type channel() :: egrpc_channel:ref().
 -type stream() :: egrpc_stream:stream().
 
 -type grpc_type() :: unary | client_streaming | server_streaming | bidi_streaming.
@@ -38,7 +40,7 @@
     opts := list()
 }.
 
-%% An element of the list returned by `methods/0' of the generated clients.
+%% An element of the list returned by `methods/0' of the generated stubs.
 -type method_meta() :: #{
     name := atom(),
     function := atom(),

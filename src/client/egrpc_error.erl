@@ -67,8 +67,6 @@ class({error, Reason}) ->
     class(Reason);
 class({grpc_error, Name, Message}) when is_atom(Name), is_binary(Message) ->
     {grpc, Name};
-class({no_connection_available, _}) ->
-    {transport, not_sent};
 class({stream_error, {goaway, _, _}}) ->
     {transport, not_sent};
 class({stream_error, {stream_error, refused_stream, _}}) ->
@@ -144,7 +142,6 @@ class_test() ->
     ?assertEqual({transport, not_sent},
                  class({stream_error, {stream_error, refused_stream, 'Stream reset by server.'}})),
     ?assertEqual({transport, not_sent}, class({stream_error, closing})),
-    ?assertEqual({transport, not_sent}, class({no_connection_available, no_ready})),
     %% may have been processed
     ?assertEqual({transport, unknown}, class({stream_error, closed})),
     ?assertEqual({transport, unknown}, class({stream_error, {closed, einval}})),
@@ -156,7 +153,7 @@ class_test() ->
     ?assertEqual({transport, unknown}, class({error, timeout})),
     %% of egrpc or of the application
     ?assertEqual({local, {call_credentials, no_token}}, class({call_credentials, no_token})),
-    ?assertEqual({local, client_not_found}, class(client_not_found)),
+    ?assertEqual({local, channel_not_found}, class(channel_not_found)),
     ?assertEqual({local, foo}, class(foo)).
 
 %% Every status of the gRPC status code table maps to its name, the message is optional.

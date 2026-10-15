@@ -3,7 +3,7 @@
 %% A codec is responsible for encoding and decoding messages
 %% sent and received over gRPC streams.
 %%
-%% The codec of a channel is the `codec' option of `egrpc_stub:open/3', the default is
+%% The codec of a channel is the `codec' option of `egrpc_channel:start/2', the default is
 %% `m:egrpc_proto'. The request header `content-type' is the `content_type/0' of the codec.
 %%
 %% See `m:egrpc_proto', `m:egrpc_erlpack', and `m:egrpc_json' for

@@ -86,8 +86,8 @@ init_per_testcase(_Case, Config) ->
     [{channel, Channel}, {http_port, HttpPort} | Config].
 
 end_per_testcase(_Case, Config) ->
-    _ = egrpc_client:stop(?CLIENT, 1000),
-    egrpc_stub:close(?config(channel, Config), true),
+    _ = egrpc_channel:stop(?CLIENT, 1000),
+    egrpc_test_util:close(?config(channel, Config)),
     ok.
 
 %%--------------------------------------------------------------------
@@ -131,11 +131,11 @@ call_credentials(Config) ->
         input => #{equals => #{message => <<"cred">>}},
         output => #{data => #{message => <<"authorized">>}}
     }),
-    Cred = fun(_Stream) -> {ok, #{<<"x-token">> => <<"abc">>}} end,
-    Channel = egrpc_stub:derive(?config(channel, Config), #{call_credentials => Cred}),
+    Cred = fun(_Info) -> {ok, #{<<"x-token">> => <<"abc">>}} end,
+    Channel = egrpc_channel:derive(?config(channel, Config), #{call_credentials => Cred}),
     ?assertEqual(
         {ok, #{message => <<"authorized">>}},
-        egrpc_stub:unary(Channel, #{message => <<"cred">>}, grpc(<<"Unary">>), #{})
+        egrpc_client:unary(Channel, #{message => <<"cred">>}, grpc(<<"Unary">>), #{})
     ).
 
 unary_delay(Config) ->
@@ -154,7 +154,7 @@ server_streaming(Config) ->
         input => #{equals => #{message => <<"s">>}},
         output => #{stream => [#{message => <<"a">>}, #{message => <<"b">>}, #{message => <<"c">>}]}
     }),
-    {ok, Stream0} = egrpc_stub:server_streaming(
+    {ok, Stream0} = egrpc_client:server_streaming(
         ?config(channel, Config), #{message => <<"s">>}, grpc(<<"ServerStream">>), #{}
     ),
     {ok, Stream1} = egrpc_stream:recv_header(Stream0, 5000),
@@ -168,7 +168,7 @@ client_streaming(Config) ->
         inputs => [#{equals => #{message => <<"x">>}}, #{equals => #{message => <<"y">>}}],
         output => #{data => #{message => <<"xy">>}}
     }),
-    {ok, Stream0} = egrpc_stub:client_streaming(?config(channel, Config), grpc(<<"ClientStream">>), #{}),
+    {ok, Stream0} = egrpc_client:client_streaming(?config(channel, Config), grpc(<<"ClientStream">>), #{}),
     {ok, Stream1} = egrpc_stream:send_msg(Stream0, #{message => <<"x">>}, nofin),
     {ok, Stream2} = egrpc_stream:send_msg(Stream1, #{message => <<"y">>}, nofin),
     {ok, Stream3} = egrpc_stream:close_send(Stream2),
@@ -189,7 +189,7 @@ bidi_streaming(Config) ->
         end,
         [{<<"b1">>, <<"echo1">>}, {<<"b2">>, <<"echo2">>}]
     ),
-    {ok, Stream0} = egrpc_stub:bidi_streaming(?config(channel, Config), grpc(<<"Bidi">>), #{}),
+    {ok, Stream0} = egrpc_client:bidi_streaming(?config(channel, Config), grpc(<<"Bidi">>), #{}),
     {ok, Stream1} = egrpc_stream:send_msg(Stream0, #{message => <<"b1">>}, nofin),
     {ok, Stream2} = egrpc_stream:recv_header(Stream1, 5000),
     {[M1], Stream3} = recv_n(1, Stream2, <<>>, []),
@@ -199,7 +199,7 @@ bidi_streaming(Config) ->
     ?assertEqual([#{message => <<"echo1">>}, #{message => <<"echo2">>}], [M1, M2]),
     ?assertEqual(ok, recv_status(Stream6)).
 
-%% The same calls through a client: the name goes where the channel went.
+%% The same calls through a channel which is started with the options of the client layer.
 
 client_unary(Config) ->
     stub(Config, #{
@@ -227,8 +227,8 @@ client_call_credentials(Config) ->
         input => #{equals => #{message => <<"cred">>}},
         output => #{data => #{message => <<"authorized">>}}
     }),
-    Cred = fun(_Stream) -> {ok, #{<<"x-token">> => <<"abc">>}} end,
-    start_client(Config, #{conn_opts => #{call_credentials => Cred}}),
+    Cred = fun(_Info) -> {ok, #{<<"x-token">> => <<"abc">>}} end,
+    start_client(Config, #{call_credentials => Cred}),
     ?assertEqual({ok, #{message => <<"authorized">>}}, client_unary_call(<<"cred">>, #{})).
 
 client_deadline(Config) ->
@@ -250,7 +250,7 @@ client_concurrent_unary(Config) ->
         input => #{equals => #{message => <<"hi">>}},
         output => #{data => #{message => <<"hello">>}, delay => <<"100ms">>}
     }),
-    start_client(Config, #{pool_size => 2}),
+    start_client(Config, #{transport_pool => #{min_connections => 2, max_connections => 2}}),
     Self = self(),
     Pids = [spawn_link(fun() -> Self ! {self(), client_unary_call(<<"hi">>, #{})} end)
             || _ <- lists:seq(1, 20)],
@@ -264,7 +264,7 @@ client_server_streaming(Config) ->
         output => #{stream => [#{message => <<"a">>}, #{message => <<"b">>}]}
     }),
     start_client(Config, #{}),
-    {ok, Stream0} = egrpc_stub:server_streaming(
+    {ok, Stream0} = egrpc_client:server_streaming(
         ?CLIENT, #{message => <<"s">>}, grpc(<<"ServerStream">>), #{}
     ),
     {ok, Stream1} = egrpc_stream:recv_header(Stream0, 5000),
@@ -279,7 +279,7 @@ client_bidi_streaming(Config) ->
         output => #{data => #{message => <<"echo1">>}}
     }),
     start_client(Config, #{}),
-    {ok, Stream0} = egrpc_stub:bidi_streaming(?CLIENT, grpc(<<"Bidi">>), #{}),
+    {ok, Stream0} = egrpc_client:bidi_streaming(?CLIENT, grpc(<<"Bidi">>), #{}),
     {ok, Stream1} = egrpc_stream:send_msg(Stream0, #{message => <<"b1">>}, nofin),
     {ok, Stream2} = egrpc_stream:recv_header(Stream1, 5000),
     {[M1], Stream3} = recv_n(1, Stream2, <<>>, []),
@@ -292,13 +292,11 @@ client_bidi_streaming(Config) ->
 
 start_client(Config, Opts) ->
     {_, GrpcPort, _} = ?config(gripmock, Config),
-    ok = egrpc_client:start(?CLIENT, Opts#{
-        targets => [#{id => gripmock, host => "localhost", port => GrpcPort}]
-    }),
-    ok = egrpc_client:await_ready(?CLIENT, 5000).
+    ok = egrpc_channel:start(?CLIENT, Opts#{target => egrpc_test_util:target(GrpcPort)}),
+    ok = egrpc_channel:await_ready(?CLIENT, 5000).
 
 client_unary_call(Message, Opts) ->
-    egrpc_stub:unary(?CLIENT, #{message => Message}, grpc(<<"Unary">>), Opts).
+    egrpc_client:unary(?CLIENT, #{message => Message}, grpc(<<"Unary">>), Opts).
 
 grpc(Method) ->
     #{
@@ -309,18 +307,18 @@ grpc(Method) ->
     }.
 
 unary_call(Config, Message, Opts) ->
-    egrpc_stub:unary(?config(channel, Config), #{message => Message}, grpc(<<"Unary">>), Opts).
+    egrpc_client:unary(?config(channel, Config), #{message => Message}, grpc(<<"Unary">>), Opts).
 
 recv_n(0, Stream, _Buf, Acc) ->
     {lists:reverse(Acc), Stream};
 recv_n(N, Stream0, Buf, Acc) ->
-    {ok, Stream, Msg, Rest} = egrpc_stream:recv_msg(Stream0, 5000, Buf),
-    recv_n(N - 1, Stream, Rest, [Msg | Acc]).
+    {ok, Stream, Msg} = egrpc_stream:recv_msg(Stream0, 5000),
+    recv_n(N - 1, Stream, Buf, [Msg | Acc]).
 
-%% The status at the end of a streaming call, read the trailers from gun.
+%% The status at the end of a streaming call: `eof' for OK.
 recv_status(Stream) ->
-    case gun:await(egrpc_stub:conn_pid(Stream), egrpc_stream:stream_ref(Stream), 5000) of
-        {trailers, Trailers} -> egrpc_error:from_grpc_status(Trailers);
+    case egrpc_stream:recv_msg(Stream, 5000) of
+        eof -> ok;
         Other -> {error, Other}
     end.
 

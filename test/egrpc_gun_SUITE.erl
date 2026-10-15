@@ -1,6 +1,6 @@
 %% @doc What gun does on `gun:cancel/2' and `gun:flush/1'.
 %%
-%% The cleanup rules of a failed unary call (REFACTOR.md, 4.5) were derived by reading the source of
+%% The cleanup rules of a failed unary call were derived by reading the source of
 %% gun. These tests check the premises by running, without egrpc.
 -module(egrpc_gun_SUITE).
 

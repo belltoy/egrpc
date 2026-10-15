@@ -1,6 +1,6 @@
 %% @private
-%% @doc The supervisors of the clients, `egrpc_client:start/2' starts one here.
--module(egrpc_clients_sup).
+%% @doc The supervisors of the channels, `egrpc_channel:start/2' starts one here.
+-module(egrpc_channels_sup).
 
 -behaviour(supervisor).
 
@@ -12,10 +12,10 @@ start_link() ->
 
 init([]) ->
     Child = #{
-        id => client_sup,
-        start => {egrpc_client_sup, start_link, []},
+        id => channel_sup,
+        start => {egrpc_channel_sup, start_link, []},
         type => supervisor,
-        %% A client which is gone for good is not started again by itself, the registry removes
+        %% A channel which is gone for good is not started again by itself, the registry removes
         %% what is left of it.
         restart => temporary
     },

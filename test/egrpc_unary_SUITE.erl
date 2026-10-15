@@ -1,7 +1,7 @@
 %% @doc Unary calls of egrpc against the fake server, for what a real server does not do.
 %%
 %% The tests named `no_leftover_*' check that nothing of the stream is left in the mailbox of the
-%% caller after a failed call (REFACTOR.md, 4.5).
+%% caller after a failed call.
 -module(egrpc_unary_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
@@ -37,7 +37,7 @@
 
 -define(CHECK_TIMEOUT(Ch, Ms), ?CHECK(Ch, #{timeout => Ms})).
 
--define(CHECK(Ch, Opts), egrpc_grpc_health_v1_health_client:check(Ch, #{service => <<"s">>}, Opts)).
+-define(CHECK(Ch, Opts), egrpc_grpc_health_v1_health_stub:check(Ch, #{service => <<"s">>}, Opts)).
 
 all() ->
     [
@@ -87,7 +87,7 @@ serve(Actions) ->
     {Ref, egrpc_test_util:open(egrpc_fake_server:port(Ref))}.
 
 done({Ref, Channel}) ->
-    egrpc_stub:close(Channel, true),
+    egrpc_test_util:close(Channel),
     egrpc_fake_server:stop(Ref).
 
 ok(_Config) ->
@@ -209,7 +209,7 @@ no_message_status_error(_Config) ->
     ?assertEqual({error, {grpc_error, unavailable, <<"gone">>}}, ?CHECK(Ch, #{})),
     done(Srv).
 
-%% `recv_msg/3' of a streaming call returns what the trailers say when the stream ends: `eos' for
+%% `recv_msg/2' of a streaming call returns what the trailers say when the stream ends: `eof' for
 %% an OK status, the error of the status otherwise.
 watch_ends_with_status(_Config) ->
     Frame = egrpc_fake_server:frame(egrpc_test_util:health_response('SERVING')),
@@ -221,8 +221,8 @@ watch_ends_with_status(_Config) ->
     Srv = {_, Ch} = serve(Actions),
     {ok, S0} = egrpc_health_watch(Ch),
     {ok, S1} = egrpc_stream:recv_header(S0, 2000),
-    {ok, S2, #{status := 'SERVING'}, <<>>} = egrpc_stream:recv_msg(S1, 2000, <<>>),
-    ?assertEqual({error, eos}, egrpc_stream:recv_msg(S2, 2000, <<>>)),
+    {ok, S2, #{status := 'SERVING'}} = egrpc_stream:recv_msg(S1, 2000),
+    ?assertEqual(eof, egrpc_stream:recv_msg(S2, 2000)),
     done(Srv).
 
 watch_ends_with_error(_Config) ->
@@ -235,13 +235,13 @@ watch_ends_with_error(_Config) ->
     Srv = {_, Ch} = serve(Actions),
     {ok, S0} = egrpc_health_watch(Ch),
     {ok, S1} = egrpc_stream:recv_header(S0, 2000),
-    {ok, S2, _, <<>>} = egrpc_stream:recv_msg(S1, 2000, <<>>),
+    {ok, S2, _} = egrpc_stream:recv_msg(S1, 2000),
     ?assertEqual({error, {grpc_error, unauthenticated, <<"bad token">>}},
-                 egrpc_stream:recv_msg(S2, 2000, <<>>)),
+                 egrpc_stream:recv_msg(S2, 2000)),
     done(Srv).
 
 egrpc_health_watch(Ch) ->
-    egrpc_grpc_health_v1_health_client:watch(Ch, #{service => <<"s">>}).
+    egrpc_grpc_health_v1_health_stub:watch(Ch, #{service => <<"s">>}).
 
 connection_closed(_Config) ->
     Srv = {_, Ch} = serve([close]),

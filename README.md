@@ -10,13 +10,13 @@ A gRPC client library for Erlang/OTP built on top of [gun](https://github.com/ni
     - Protocol Buffers codec
     - JSON codec
     - Erlpack codec
-- Interceptors for unary and streaming calls
-- Credentials for every call
-- Channels which share a connection and have different interceptors
-- Clients: several targets, a fixed number of connections to each target, reconnect with backoff,
-  load balancing, and retries
-- Deadlines
-- Standard gRPC API clients
+- Logical channels: a resolver (static, DNS) gives the endpoints, a subchannel for each, a pool of
+  HTTP/2 connections in each subchannel, load balancing (`pick_first`, `round_robin`), reconnect with
+  backoff
+- Every attempt of a call picks its endpoint again, retries with a budget, deadlines, wait for ready
+- Interceptors for unary calls, hooks for the lifecycle of streams and for the attempts
+- Credentials for the connection (TLS) and for every call
+- Standard gRPC API stubs
     - Health v1 API
     - Reflection v1 API
     - Reflection v1alpha API
@@ -27,7 +27,7 @@ Add `egrpc` as dependency in your `rebar.config` file:
 
 ```erlang
 {deps, [
-    {egrpc, "0.1.2"}
+    {egrpc, "0.2.0"}
 ]}.
 ```
 
@@ -51,8 +51,8 @@ your `rebar.config`:
 %% Set egrpc options to generate gRPC client modules.
 {egrpc_opts, [
     {module_name_prefix, "my_grpc_"},
-    {module_name_suffix, "_client"},
-    {out_dir, "src/clients"},
+    {module_name_suffix, "_stub"},
+    {out_dir, "src/stubs"},
     {protos, "priv/protos/"},
     {client_type, "egrpc:client()"},
     {method_meta_type, "egrpc:method_meta()"}
@@ -80,167 +80,177 @@ your `rebar.config`:
 ]}.
 ```
 
-Then run `rebar3 compile` in your project directory. If succeeded, you can use the generated client
-module to make gRPC calls.
+Then run `rebar3 compile` in your project directory. If succeeded, you can use the generated stub
+modules to make gRPC calls. A stub is a plain module which knows the methods, their types and their
+cardinality, and nothing of connections or retries.
 
-### A client
+### A channel
 
-A client is a named set of targets. egrpc keeps a fixed number of connections to each target,
-reconnects them, and picks one for every call. The `egrpc` application must be started.
+A channel is a logical connection to a service, not to a host. Its target is resolved to endpoints,
+every endpoint has a subchannel which keeps its connections, and every call is sent on one of them.
+The `egrpc` application must be started.
 
 ```erlang
-ok = egrpc_client:start(orders, #{
-    targets => [
-        #{id => a, host => "10.0.0.1", port => 50051},
-        #{id => b, host => "10.0.0.2", port => 50051}
-    ],
-    pool_size => 4
+ok = egrpc_channel:start(orders, #{
+    target => "dns:///orders.internal:50051",
+    balancer => round_robin,
+    transport_pool => #{min_connections => 1, max_connections => 4}
 }),
-ok = egrpc_client:await_ready(orders, 5000),
+ok = egrpc_channel:await_ready(orders, 5000),
 
-%% The name is the first argument of the generated client functions.
-{ok, Response} = my_grpc_api:method(orders, Request),
+%% The name of the channel is the first argument of the generated stub functions.
+{ok, Response} = my_grpc_api_stub:method(orders, Request),
 
-ok = egrpc_client:stop(orders).
+ok = egrpc_channel:stop(orders).
 ```
 
-- `start/2` returns when the options are valid. The connections are made in the background, a target
-  which can not be reached is retried with backoff, and `start/2` does not fail for it.
-- `await_ready/2` returns `ok` when at least one connection of at least one target is ready, or
-  `{error, timeout}`. A client keeps trying after the timeout, stop it with `stop/1`.
-- Starting a client with a name which is already started returns `{error, {already_started, Pid}}`.
-- A call before a connection is ready, or when every target is excluded, returns
-  `{error, {no_connection_available, Reason}}` at once, `Reason` is `no_targets`, `no_ready` or
-  `all_excluded`. It does not wait. After `stop/1` a call returns `{error, client_not_found}`.
+- The target is `"dns:///host:port"` (every address of the name is an endpoint, resolved again every
+  30 s), `"static:///host1:port1,host2:port2"` or `"host:port"`, or `{Module, Arg}` of a module
+  which implements `egrpc_resolver`.
+- `start/2` returns when the options are valid. The connections are made in the background, an
+  endpoint which can not be reached is retried with backoff, and `start/2` does not fail for it.
+- `await_ready/2` returns `ok` when at least one subchannel is ready, or `{error, timeout}`. A
+  channel keeps trying after the timeout, stop it with `stop/1`.
+- Starting a channel with a name which is already started returns `{error, {already_started, Pid}}`.
+- A call which finds no subchannel which can take it returns
+  `{error, {grpc_error, unavailable, _}}` at once, or waits for one with `wait_for_ready => true`
+  in its options until its deadline. After `stop/1` a call returns `{error, channel_not_found}`.
 - `stop/1` is the opposite of `start/2`. It removes the name so new calls fail at once, waits for
   the unary calls in flight to return or for `stop(Name, Timeout)` (5000 ms by default), and closes
   the connections. A stream which is open fails with `closed`.
 
-Change the targets at run time with `egrpc_client:set_targets(orders, Targets)`. It replaces the
-whole set and compares by `id`: a new target gets connections, a removed one has its connections
-closed, and a change of `attrs` only does not touch the connections.
+The endpoints of a channel with the static resolver are changed at run time with
+`egrpc_channel:update_endpoints(orders, ["10.0.0.1:50051", "10.0.0.2:50051"])`. An endpoint is the
+same when its id is, a new one gets a subchannel, a removed one is closed.
 
-The balancer is `pick_first` or `round_robin`; a target with `attrs => #{standby => true}` is only
-used when a call asks for it. The streams of a call stay on the connection which was picked, they
-are not moved to another one.
+How a channel works, and what each part is:
 
-### A single connection
+| Part | What it is |
+|---|---|
+| `egrpc_resolver` | turns the target into endpoints (`egrpc_resolver_static`, `egrpc_resolver_dns`) |
+| `egrpc_channel` | the coordinator: it owns the balancer and the subchannels and publishes the picker |
+| `egrpc_balancer` | a pure state machine which says which subchannels exist (`pick_first`, `round_robin`) |
+| `egrpc_picker` | an immutable snapshot which every attempt reads, no process is on the path of a call |
+| `egrpc_subchannel` | the connectivity of one endpoint, its transports and their reconnects |
+| `egrpc_transport_pool` | the HTTP/2 transports of a subchannel, `min_connections` to `max_connections` |
+| `egrpc_transport` | one HTTP/2 connection (`egrpc_transport_http2`, on gun) |
 
-```erlang
-Host = "127.0.0.1",
-Port = 50052,
-Opts = #{},
-{ok, Channel0} = egrpc_stub:open(Host, Port, Opts),
-{ok, Channel1} = egrpc_stub:await_up(Channel0),
+The calls are made in the calling process. The processes only keep the connections and the picker
+up to date.
 
-% Call via generated client API method
-Request = #{},
-Result = my_grpc_api:method(Channel1, Request),
+### Transports and TLS
 
-% Close channel
-egrpc_stub:close(Channel1).
-```
-
-`await_up/2` does not close the connection when it fails, the caller decides.
-
-You can find more usages in [`etcdgun`](https://hex.pm/packages/etcdgun).
-
-## Channels
-
-A channel is a plain value owned by the process which opened it, not a process. The process which
-calls `egrpc_stub:open/3` is the owner of the `gun` connection: the connection is closed when that
-process exits, and `gun_up`/`gun_down` are sent to it. Keep the channel which `open/3` returned, it
-is the only one which can close the connection.
-
-`egrpc_stub:derive/2` returns a channel on the same connection with a different pipeline
-(`interceptors`, `call_credentials`, `info`). It opens no connection, and `egrpc_stub:close/1,2` on
-the derived channel raises `not_closable`:
+`transport_pool` sets how many HTTP/2 connections a subchannel has: `min_connections` (default 1)
+and `max_connections` (default 1), `scale_up_threshold`, `idle_timeout` and
+`max_streams_per_connection`. One connection is enough for most services, HTTP/2 multiplexes the
+calls. With `max_connections` greater than `min_connections` a connection is added when the ones
+which exist are full (the limit of the server, or `max_streams_per_connection`), and the ones which
+are not used are closed after `idle_timeout`. Only unary calls are counted.
 
 ```erlang
-%% The same connection, without the interceptors of Channel.
-Bare = egrpc_stub:derive(Channel, #{interceptors => []}),
-%% A key which is absent keeps the setting of Channel.
-WithInfo = egrpc_stub:derive(Channel, #{info => #{user => <<"alice">>}}).
+ok = egrpc_channel:start(orders, #{
+    target => "dns:///orders.internal:443",
+    transport_credentials => egrpc_transport_credentials:new(#{ca => "/etc/ssl/ca.pem"}),
+    http2 => #{keepalive => 30000, keepalive_tolerance => 2}
+}).
 ```
 
-`derive/2` is for channels. The name of a client takes the pipeline from the `conn_opts` it was
-started with.
+`transport_credentials` is `insecure` (default) or the TLS options: `ca`, `cert` and `key` for
+mutual TLS, `verify`. `http2` sets `keepalive`, `keepalive_tolerance` and `closing_timeout`, which
+are the ones to set for connections which pass through a NAT or a load balancer.
+
+## Derived channels
+
+`egrpc_channel:derive/2` returns a channel which has the same subchannels and a different pipeline
+(`interceptors`, `call_credentials`, `attempt_hooks`, `wait_for_ready`, `info`). It starts nothing
+and is cheap enough for every call. A key which is absent keeps the setting:
+
+```erlang
+%% The same subchannels, without the interceptors of the channel.
+Bare = egrpc_channel:derive(orders, #{interceptors => []}),
+WithInfo = egrpc_channel:derive(orders, #{info => #{user => <<"alice">>}}),
+{ok, Response} = my_grpc_api_stub:method(Bare, Request).
+```
 
 ## Interceptors
 
-`interceptors` of `egrpc_stub:open/3` and `egrpc_stub:derive/2` (and of `conn_opts` of a client) is a
-list of modules which implement the `egrpc_interceptor` behaviour, `{Module, InitOpts}`, or
-`fun/4`. The first one is the outermost. They run in the process which makes the call.
+`interceptors` of `egrpc_channel:start/2` and `egrpc_channel:derive/2` is a list of modules or
+`fun/3`. The first one is the outermost. They run in the process which makes the call, once for a
+logical call whatever its number of attempts, and do not see the subchannel.
 
 ```erlang
-%% A fun is a stateless wrap of unary calls.
-Log = fun(Stream, Request, Opts, Next) ->
-    logger:info("calling ~p", [egrpc_stream:grpc_method(Stream)]),
-    Next(Stream, Request, Opts)
+Log = fun(Call, Request, Next) ->
+    logger:info("calling ~s", [egrpc_call:method(Call)]),
+    Next(Call, Request)
 end,
-{ok, Channel} = egrpc_stub:open(Host, Port, #{interceptors => [Log, {my_interceptor, #{}}]}).
+ok = egrpc_channel:start(orders, #{target => Target, interceptors => [Log, my_interceptor]}).
 ```
 
-A module can wrap a unary call with `unary/5`, which can change the request or call `Next` again to
-retry, and implement the hooks of the phases of a call (`init_req/4`, `send_msg/5`, `recv_header/4`,
-`recv_msg/5`, `close_send/3` and `parse_msg/4`), which fire for unary calls too. A hook which
-returns `{error, Reason}` stops the call. See the documentation of `egrpc_interceptor`.
+- `egrpc_interceptor`: `unary(Call, Request, Next)` wraps a unary call. It can change the call
+  (`egrpc_call`), the request, call `Next` again, and change the result.
+- `egrpc_stream_interceptor`: `stream_open/2`, `stream_send/3`, `stream_recv/3` and
+  `stream_close/2` for the lifecycle of the streams of streaming calls.
+- `egrpc_attempt_hooks`: `on_attempt_start/1` and `on_attempt_end/2` observe every network attempt,
+  it is the `attempt_hooks` option.
 
 ## Credentials
 
-`call_credentials` is a function which is called before every call is sent, and returns the
-metadata to add to the request, for example a token. The metadata of the call options takes
-precedence.
+`call_credentials` is a module which implements `egrpc_credentials`, `{Module, Context}`, or a
+`fun((CallInfo) -> {ok, Metadata} | {error, Reason})`. It is called for every attempt of a unary
+call and when a stream is opened, and returns the metadata to add to the request, for example a
+token. The metadata of the call options takes precedence.
 
 ```erlang
-Credentials = fun(_Stream) ->
+Credentials = fun(_CallInfo) ->
     case persistent_term:get(my_token, undefined) of
         undefined -> {error, no_token};
         Token -> {ok, #{<<"token">> => Token}}
     end
 end,
-Authenticated = egrpc_stub:derive(Channel, #{call_credentials => Credentials}).
+Authenticated = egrpc_channel:derive(orders, #{call_credentials => Credentials}).
 ```
 
-The function should be fast. Refreshing the token is up to the application, for example in an
-interceptor which calls `Next` again after an `unauthenticated` error: the function is called
-again.
+The function should be fast. A retry gets new metadata, so a token which was refreshed by then is
+used. An established stream keeps what it was opened with.
 
 ## Deadlines and timeouts
 
 `deadline` in the options of a call is how long the whole call may take, in milliseconds. It is
 sent to the server in the `grpc-timeout` header, and the call returns
-`{error, {grpc_error, deadline_exceeded, _}}` when it is over. A retry shares the deadline of the
-call.
+`{error, {grpc_error, deadline_exceeded, _}}` when it is over. The attempts of a call share it, a
+retry does not reset it.
 
 `timeout` is how long a unary call waits for each message of the response, 5000 ms by default. It is
 not a deadline and the server is not told about it. The functions which receive on a streaming call
 take a timeout as an argument.
 
 ```erlang
-Result = my_grpc_api:method(Client, Request, #{deadline => 2000, timeout => 10000}).
+Result = my_grpc_api_stub:method(orders, Request,
+                                 #{deadline => 2000, timeout => 10000, wait_for_ready => true}).
 ```
 
 ## Retries
 
-With the `retry` option a client makes a unary call again on another target when the request was
-not sent (the server went away with `GOAWAY`, refused the stream, or the connection is closing):
-once, at once, for any method. For the methods which are marked `IDEMPOTENT` or `NO_SIDE_EFFECTS`
-in the proto it also does when the connection was lost or the status is `unavailable`, up to
-`max_attempts`. A retry waits with exponential backoff and full jitter, goes to another target when
-there is one, and stops at the deadline. Streaming calls are not retried.
+With the `retry` option a channel makes a unary call again when the request was not sent (the
+server went away with `GOAWAY`, refused the stream, or the connection is closing): once, at once,
+for any method. For the methods which are marked `IDEMPOTENT` or `NO_SIDE_EFFECTS` in the proto it
+also does when the connection was lost or the status is one of `retryable_codes` (`unavailable`),
+up to `max_attempts`. Every attempt picks its subchannel again and avoids the ones which failed
+when there is another. A retry waits with exponential backoff and full jitter, and stops at the
+deadline. Streaming calls are not retried: what to resume is the decision of the protocol above.
 
 ```erlang
-ok = egrpc_client:start(orders, #{
-    targets => Targets,
+ok = egrpc_channel:start(orders, #{
+    target => Target,
     retry => #{max_attempts => 3, initial_backoff => 50, max_backoff => 1000, multiplier => 2},
     retry_budget => #{max_tokens => 100, token_ratio => 0.1}
 }).
 ```
 
-`retry_budget` is kept for each target: a failed attempt takes a token, a success gives
-`token_ratio` of one back, and no retry is made while a target has half of `max_tokens` or fewer.
-This keeps retries from piling on a target which is failing.
+`retry_budget` is kept for the channel: a failed attempt takes a token, a success gives
+`token_ratio` of one back, and no retry is made while the channel has half of `max_tokens` or fewer.
+This keeps retries from piling on a service which is failing. `retry => false` in the options of a
+call turns the retries off for it.
 
 Reconnects have their own backoff, `reconnect_backoff => #{initial => 1000, max => 30000,
 multiplier => 1.6, jitter => 0.2}` in milliseconds.
@@ -251,7 +261,7 @@ multiplier => 1.6, jitter => 0.2}` in milliseconds.
 and whether it is safe to retry it.
 
 ```erlang
-case my_grpc_api:method(Client, Request) of
+case my_grpc_api_stub:method(orders, Request) of
     {ok, Response} -> Response;
     {error, Reason} -> egrpc_error:class(Reason)
 end.
@@ -264,33 +274,24 @@ response too:
 
 ```erlang
 {ok, Response, #{headers := Headers, trailers := Trailers}} =
-    my_grpc_api:method(Client, Request, #{with_metadata => true}).
-```
-
-## Connections
-
-`http2` in the options of `open/3` and of `conn_opts` of a client sets `keepalive`,
-`keepalive_tolerance` and `closing_timeout`, which are the ones to set for connections which pass
-through a NAT or a load balancer:
-
-```erlang
-#{http2 => #{keepalive => 30000, keepalive_tolerance => 2}}
+    my_grpc_api_stub:method(orders, Request, #{with_metadata => true}).
 ```
 
 ## Codecs
 
-`codec` of `egrpc_stub:open/3` (and of `conn_opts` of a client) is the module which encodes the
+`codec` of `egrpc_channel:start/2` is the module which encodes the
 messages and gives the content type of the requests: `egrpc_proto` (default), `egrpc_json` or
 `egrpc_erlpack`, or your own module which implements `egrpc_codec`.
 
 ## Limits
 
-- A stream stays on the connection it was created on. When the connection is lost, the stream
+- A stream stays on the transport it was created on. When the transport is lost, the stream
   fails with `closed` and the application creates a new one.
-- A connection which received `GOAWAY` is skipped by later calls only after a call has seen it: the
-  first call which is sent to it fails at once and is retried on another connection.
-- Streams are not counted against the maximum number of concurrent streams of a connection. A
-  stream which the server refuses for it is retried on another connection.
+- A transport which received `GOAWAY` is skipped by later calls only after a call has seen it: the
+  first call which is sent to it fails at once and is retried on another one.
+- Streams are not counted against the maximum number of concurrent streams of a transport, so
+  they do not take part in the scale up and scale down of the pool.
+- Not built: resolvers other than static and DNS (xDS, SRV), hedging, outlier detection, telemetry.
 
 ## License
 

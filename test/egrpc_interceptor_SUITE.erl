@@ -1,5 +1,4 @@
-%% @doc The interceptors: the hooks of unary and streaming calls, the order, the state and the
-%% errors, against the fake server.
+%% @doc The interceptors, the stream hooks and the attempt hooks against the fake server.
 -module(egrpc_interceptor_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
@@ -7,35 +6,39 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([
-    unary_hooks_and_wraps_order/1,
-    state_threads_through_the_hooks/1,
-    same_module_twice_has_independent_state/1,
-    init_is_called_for_open_and_derive/1,
-    init_req_error_stops_the_call/1,
-    recv_header_error_is_the_result/1,
+    unary_wraps_order/1,
+    unary_does_not_fire_stream_hooks/1,
+    unary_wrap_can_call_next_again/1,
+    unary_wrap_changes_result/1,
     fun_wraps_unary_only/1,
-    unary_wrap_can_retry/1,
     streaming_hooks/1,
-    client_streaming_close_send/1,
+    stream_open_error_stops_the_call/1,
+    stream_recv_error_is_the_result/1,
+    stream_send_error_cancels/1,
+    client_streaming_send_hooks/1,
+    stream_close_on_cancel/1,
+    derive_replaces_interceptors/1,
     invalid_interceptor_is_an_error/1,
     removed_options_are_errors/1
 ]).
 
 -define(SERVICE, 'egrpc.test.v1.Echo').
--define(CHECK(Ch), egrpc_grpc_health_v1_health_client:check(Ch, #{service => <<"s">>})).
+-define(CHECK(Ch), egrpc_grpc_health_v1_health_stub:check(Ch, #{service => <<"s">>})).
 
 all() ->
     [
-        unary_hooks_and_wraps_order,
-        state_threads_through_the_hooks,
-        same_module_twice_has_independent_state,
-        init_is_called_for_open_and_derive,
-        init_req_error_stops_the_call,
-        recv_header_error_is_the_result,
+        unary_wraps_order,
+        unary_does_not_fire_stream_hooks,
+        unary_wrap_can_call_next_again,
+        unary_wrap_changes_result,
         fun_wraps_unary_only,
-        unary_wrap_can_retry,
         streaming_hooks,
-        client_streaming_close_send,
+        stream_open_error_stops_the_call,
+        stream_recv_error_is_the_result,
+        stream_send_error_cancels,
+        client_streaming_send_hooks,
+        stream_close_on_cancel,
+        derive_replaces_interceptors,
         invalid_interceptor_is_an_error,
         removed_options_are_errors
     ].
@@ -50,31 +53,26 @@ end_per_suite(_Config) ->
 %%--------------------------------------------------------------------
 %% Helpers
 
-recorder(Tag) -> recorder(Tag, #{}).
-
-recorder(Tag, Extra) ->
-    {egrpc_test_recorder, Extra#{tag => Tag, pid => self()}}.
-
-%% Start a server for the handler and open a channel with the interceptors to it.
-with_channel(Handler, Interceptors, Fun) ->
+%% Start a server for the handler and open a channel with the options to it. The `info' of the
+%% channel has the test process, which the recorders tell.
+with_channel(Handler, Opts, Fun) ->
     {ok, Ref} = egrpc_fake_server:start(Handler),
-    {ok, Ch0} = egrpc_stub:open("localhost", egrpc_fake_server:port(Ref),
-                                #{interceptors => Interceptors}),
-    {ok, Ch} = egrpc_stub:await_up(Ch0),
+    Info = maps:merge(#{pid => self()}, maps:get(info, Opts, #{})),
+    Ch = egrpc_test_util:open(egrpc_fake_server:port(Ref), Opts#{info => Info}),
     try
         Fun(Ch)
     after
-        egrpc_stub:close(Ch, true),
+        egrpc_test_util:close(Ch),
         egrpc_fake_server:stop(Ref)
     end.
 
 ok_handler() ->
     fun(_) -> egrpc_fake_server:ok(egrpc_test_util:health_response('SERVING')) end.
 
-%% All the events of the recorders in the mailbox, as `{Tag, Hook, Detail, Count}'.
+%% All the events of the recorders in the mailbox, as `{Tag, Hook, Detail}'.
 events() ->
     receive
-        {event, Tag, Hook, Detail, Count} -> [{Tag, Hook, Detail, Count} | events()]
+        {event, Tag, Hook, Detail} -> [{Tag, Hook, Detail} | events()]
     after 200 -> []
     end.
 
@@ -89,110 +87,31 @@ grpc(Method) ->
 %%--------------------------------------------------------------------
 %% Tests
 
-%% All the wraps are outside, all the hooks inside, and the first interceptor is the outermost.
-unary_hooks_and_wraps_order(_Config) ->
-    with_channel(ok_handler(), [recorder(a), recorder(b)], fun(Ch) ->
+%% The first interceptor is the outermost, the attempt is inside all of them.
+unary_wraps_order(_Config) ->
+    Opts = #{interceptors => [egrpc_test_recorder, egrpc_test_recorder_b],
+             attempt_hooks => [egrpc_test_recorder]},
+    with_channel(ok_handler(), Opts, fun(Ch) ->
         ?assertMatch({ok, #{status := 'SERVING'}}, ?CHECK(Ch)),
         ?assertEqual(
             [
-                {a, unary, in, 0}, {b, unary, in, 0},
-                {a, init_req, none, 0}, {b, init_req, none, 0},
-                {a, send_msg, fin, 1}, {b, send_msg, fin, 1},
-                {a, recv_header, none, 2}, {b, recv_header, none, 2},
-                {a, recv_msg, none, 3}, {b, recv_msg, none, 3},
-                {b, unary, out, 0}, {a, unary, out, 0}
+                {a, unary, in}, {b, unary, in},
+                {a, attempt_start, 0}, {a, attempt_end, {0, ok}},
+                {b, unary, out}, {a, unary, out}
             ],
             events()
         )
     end).
 
-%% The state which a hook returns is the state of the next hook of the call. The wrap only sees
-%% the initial state, it can not change it.
-state_threads_through_the_hooks(_Config) ->
-    with_channel(ok_handler(), [recorder(a)], fun(Ch) ->
+%% A unary call is not a stream: the hooks of a stream are not fired for it.
+unary_does_not_fire_stream_hooks(_Config) ->
+    with_channel(ok_handler(), #{interceptors => [egrpc_test_recorder]}, fun(Ch) ->
         ?assertMatch({ok, _}, ?CHECK(Ch)),
-        Counts = [{Hook, Count} || {a, Hook, _, Count} <- events()],
-        ?assertEqual(
-            [{unary, 0}, {init_req, 0}, {send_msg, 1}, {recv_header, 2}, {recv_msg, 3}, {unary, 0}],
-            Counts
-        ),
-        %% a second call starts from the initial state again
-        ?assertMatch({ok, _}, ?CHECK(Ch)),
-        ?assertEqual(0, element(4, hd(events())))
+        ?assertEqual([{a, unary, in}, {a, unary, out}], events())
     end).
 
-%% The state is by position, not by module.
-same_module_twice_has_independent_state(_Config) ->
-    with_channel(ok_handler(), [recorder(first), recorder(second)], fun(Ch) ->
-        ?assertMatch({ok, _}, ?CHECK(Ch)),
-        Events = events(),
-        ?assertEqual(
-            [{init_req, 0}, {send_msg, 1}, {recv_header, 2}, {recv_msg, 3}],
-            [{H, C} || {first, H, _, C} <- Events, H =/= unary]
-        ),
-        ?assertEqual(
-            [{init_req, 0}, {send_msg, 1}, {recv_header, 2}, {recv_msg, 3}],
-            [{H, C} || {second, H, _, C} <- Events, H =/= unary]
-        )
-    end).
-
-init_is_called_for_open_and_derive(_Config) ->
-    with_channel(ok_handler(), [recorder(a)], fun(Ch) ->
-        ?assertEqual([a], [T || {init, T} <- init_msgs()]),
-        _ = egrpc_stub:derive(Ch, #{interceptors => [recorder(b), recorder(c)]}),
-        ?assertEqual([b, c], [T || {init, T} <- init_msgs()]),
-        %% a derived channel which does not change the interceptors does not initialize them
-        _ = egrpc_stub:derive(Ch, #{info => x}),
-        ?assertEqual([], init_msgs())
-    end).
-
-init_msgs() ->
-    receive
-        {init, _} = Msg -> [Msg | init_msgs()]
-    after 100 -> []
-    end.
-
-%% A hook which fails stops the call, nothing is sent.
-init_req_error_stops_the_call(_Config) ->
-    Handler = fun(_) -> ct:fail(request_was_sent) end,
-    with_channel(Handler, [recorder(a, #{fail => init_req}), recorder(b)], fun(Ch) ->
-        ?assertEqual({error, denied}, ?CHECK(Ch)),
-        %% the inner interceptor was not reached
-        ?assertEqual([a], lists:usort([T || {T, Hook, _, _} <- events(), Hook =/= unary])),
-        receive
-            {fake_server_request, _} -> ct:fail(request_reached_the_server)
-        after 200 -> ok
-        end
-    end).
-
-recv_header_error_is_the_result(_Config) ->
-    with_channel(ok_handler(), [recorder(a, #{fail => recv_header})], fun(Ch) ->
-        ?assertEqual({error, denied}, ?CHECK(Ch))
-    end).
-
-%% A `fun/4' is a stateless wrap of unary calls, it does not see streaming calls.
-fun_wraps_unary_only(_Config) ->
-    Pid = self(),
-    Fun = fun(Stream, Req, Opts, Next) ->
-        Pid ! {fun_called, egrpc_stream:grpc_method(Stream)},
-        Next(Stream, Req, Opts)
-    end,
-    with_channel(ok_handler(), [Fun], fun(Ch) ->
-        ?assertMatch({ok, _}, ?CHECK(Ch)),
-        receive
-            {fun_called, 'Check'} -> ok
-        after 1000 -> ct:fail(fun_not_called)
-        end,
-        {ok, Stream} = egrpc_grpc_health_v1_health_client:watch(Ch, #{service => <<"s">>}),
-        {ok, _} = egrpc_stream:recv_header(Stream, 2000),
-        receive
-            {fun_called, _} -> ct:fail(fun_called_for_a_streaming_call)
-        after 200 -> ok
-        end
-    end).
-
-%% A wrap can call `Next' again, the hooks run again for the second attempt.
-unary_wrap_can_retry(_Config) ->
+%% A wrap can call `Next' again: every call of it is an attempt, and picks again.
+unary_wrap_can_call_next_again(_Config) ->
     Counter = atomics:new(1, []),
     Handler = fun(_) ->
         case atomics:add_get(Counter, 1, 1) of
@@ -200,66 +119,169 @@ unary_wrap_can_retry(_Config) ->
             _ -> egrpc_fake_server:ok(egrpc_test_util:health_response('SERVING'))
         end
     end,
-    Retry = fun(Stream, Req, Opts, Next) ->
-        case Next(Stream, Req, Opts) of
-            {error, {grpc_error, unauthenticated, _}} -> Next(Stream, Req, Opts);
+    Again = fun(Call, Req, Next) ->
+        case Next(Call, Req) of
+            {error, {grpc_error, unauthenticated, _}} -> Next(Call, Req);
             Other -> Other
         end
     end,
-    with_channel(Handler, [Retry, recorder(a)], fun(Ch) ->
+    Opts = #{interceptors => [Again], attempt_hooks => [egrpc_test_recorder]},
+    with_channel(Handler, Opts, fun(Ch) ->
         ?assertMatch({ok, #{status := 'SERVING'}}, ?CHECK(Ch)),
-        Hooks = [Hook || {a, Hook, _, _} <- events(), Hook =:= init_req],
-        ?assertEqual([init_req, init_req], Hooks),
+        ?assertEqual(
+            [{a, attempt_start, 0}, {a, attempt_end, {0, error}},
+             {a, attempt_start, 0}, {a, attempt_end, {0, ok}}],
+            events()
+        ),
         ?assertEqual(2, atomics:get(Counter, 1))
     end).
 
-%% The hooks of a server streaming call, and `parse_msg/2'.
+unary_wrap_changes_result(_Config) ->
+    Replace = fun(Call, Req, Next) ->
+        case Next(Call, Req) of
+            {ok, _} -> {error, replaced};
+            Other -> Other
+        end
+    end,
+    with_channel(ok_handler(), #{interceptors => [Replace]}, fun(Ch) ->
+        ?assertEqual({error, replaced}, ?CHECK(Ch))
+    end).
+
+%% A `fun/3' is a wrap of unary calls, it does not see streaming calls.
+fun_wraps_unary_only(_Config) ->
+    Pid = self(),
+    Fun = fun(Call, Req, Next) ->
+        Pid ! {fun_called, egrpc_call:method(Call)},
+        Next(Call, Req)
+    end,
+    with_channel(ok_handler(), #{interceptors => [Fun]}, fun(Ch) ->
+        ?assertMatch({ok, _}, ?CHECK(Ch)),
+        receive
+            {fun_called, <<"/grpc.health.v1.Health/Check">>} -> ok
+        after 1000 -> ct:fail(fun_not_called)
+        end,
+        {ok, Stream} = egrpc_grpc_health_v1_health_stub:watch(Ch, #{service => <<"s">>}),
+        {ok, _} = egrpc_stream:recv_header(Stream, 2000),
+        receive
+            {fun_called, _} -> ct:fail(fun_called_for_a_streaming_call)
+        after 200 -> ok
+        end
+    end).
+
+%% Open, the request, every message, the end of the stream and the status of it.
 streaming_hooks(_Config) ->
-    with_channel(ok_handler(), [recorder(a)], fun(Ch) ->
-        {ok, Stream0} = egrpc_grpc_health_v1_health_client:watch(Ch, #{service => <<"s">>}),
-        {ok, Stream1} = egrpc_stream:recv_header(Stream0, 2000),
-        {ok, Stream2, Msg, Rest} = egrpc_stream:recv_msg(Stream1, 2000, <<>>),
-        ?assertEqual(#{status => 'SERVING'}, Msg),
-        ?assertEqual(<<>>, Rest),
-        Frame = egrpc_fake_server:frame(egrpc_test_util:health_response('NOT_SERVING')),
-        ?assertMatch({ok, _, #{status := 'NOT_SERVING'}, <<>>}, egrpc_stream:parse_msg(Stream2, Frame)),
-        ?assertEqual(more, egrpc_stream:parse_msg(Stream2, <<0, 5:32, "ab">>)),
-        Hooks = [Hook || {a, Hook, _, _} <- events()],
+    Opts = #{interceptors => [egrpc_test_recorder], attempt_hooks => [egrpc_test_recorder]},
+    with_channel(ok_handler(), Opts, fun(Ch) ->
+        {ok, S0} = egrpc_grpc_health_v1_health_stub:watch(Ch, #{service => <<"s">>}),
+        {ok, S1} = egrpc_stream:recv_header(S0, 2000),
+        {ok, S2, #{status := 'SERVING'}} = egrpc_stream:recv_msg(S1, 2000),
+        ?assertEqual(eof, egrpc_stream:recv_msg(S2, 2000)),
         ?assertEqual(
-            [init_req, send_msg, recv_header, recv_msg, parse_msg, parse_msg],
-            Hooks
+            [
+                {a, stream_open, none},
+                {a, attempt_start, 0},
+                {a, stream_send, #{service => <<"s">>}},
+                {a, stream_recv, none},
+                {a, stream_recv, none},
+                {a, stream_close, ok},
+                {a, attempt_end, {0, ok}}
+            ],
+            events()
         )
     end).
 
-client_streaming_close_send(_Config) ->
+%% A hook which fails stops the call, nothing is sent.
+stream_open_error_stops_the_call(_Config) ->
+    Handler = fun(_) -> ct:fail(request_was_sent) end,
+    Opts = #{interceptors => [egrpc_test_recorder], info => #{fail => stream_open}},
+    with_channel(Handler, Opts, fun(Ch) ->
+        ?assertEqual({error, denied},
+                     egrpc_grpc_health_v1_health_stub:watch(Ch, #{service => <<"s">>})),
+        ?assertEqual([{a, stream_open, none}], events()),
+        receive
+            {fake_server_request, _} -> ct:fail(request_reached_the_server)
+        after 200 -> ok
+        end
+    end).
+
+stream_recv_error_is_the_result(_Config) ->
+    Opts = #{interceptors => [egrpc_test_recorder], info => #{fail => stream_recv}},
+    with_channel(ok_handler(), Opts, fun(Ch) ->
+        {ok, S0} = egrpc_grpc_health_v1_health_stub:watch(Ch, #{service => <<"s">>}),
+        {ok, S1} = egrpc_stream:recv_header(S0, 2000),
+        ?assertEqual({error, denied}, egrpc_stream:recv_msg(S1, 2000))
+    end).
+
+%% The request of a server streaming call is sent through the hook: when it fails the call fails
+%% and the stream is cancelled.
+stream_send_error_cancels(_Config) ->
+    Opts = #{interceptors => [egrpc_test_recorder], info => #{fail => stream_send}},
+    with_channel(ok_handler(), Opts, fun(Ch) ->
+        ?assertEqual({error, denied},
+                     egrpc_grpc_health_v1_health_stub:watch(Ch, #{service => <<"s">>})),
+        ?assertMatch([{a, stream_open, _}, {a, stream_send, _}, {a, stream_close, canceled}],
+                     [E || {_, H, _} = E <- events(), H =/= attempt_start, H =/= attempt_end])
+    end).
+
+client_streaming_send_hooks(_Config) ->
     Handler = fun(_) ->
         egrpc_fake_server:ok(egrpc_test_echo_pb:encode_msg(#{message => <<"done">>},
                                                            'egrpc.test.v1.EchoResponse'))
     end,
-    with_channel(Handler, [recorder(a)], fun(Ch) ->
-        {ok, S0} = egrpc_stub:client_streaming(Ch, grpc(<<"ClientStream">>), #{}),
+    with_channel(Handler, #{interceptors => [egrpc_test_recorder]}, fun(Ch) ->
+        {ok, S0} = egrpc_client:client_streaming(Ch, grpc(<<"ClientStream">>), #{}),
         {ok, S1} = egrpc_stream:send_msg(S0, #{message => <<"x">>}, nofin),
         {ok, S2} = egrpc_stream:send_msg(S1, #{message => <<"y">>}, nofin),
         {ok, S3} = egrpc_stream:close_send(S2),
         {ok, S4} = egrpc_stream:recv_header(S3, 2000),
-        {ok, _S5, #{message := <<"done">>}, <<>>} = egrpc_stream:recv_msg(S4, 2000, <<>>),
+        {ok, S5, #{message := <<"done">>}} = egrpc_stream:recv_msg(S4, 2000),
+        eof = egrpc_stream:recv_msg(S5, 2000),
         ?assertEqual(
             [
-                {init_req, 0}, {send_msg, 1}, {send_msg, 2}, {close_send, 3},
-                {recv_header, 4}, {recv_msg, 5}
+                {a, stream_open, none},
+                {a, stream_send, #{message => <<"x">>}},
+                {a, stream_send, #{message => <<"y">>}},
+                {a, stream_recv, none},
+                {a, stream_recv, none},
+                {a, stream_close, ok}
             ],
-            [{Hook, Count} || {a, Hook, _, Count} <- events()]
+            events()
         )
     end).
 
+stream_close_on_cancel(_Config) ->
+    Handler = fun(_) -> [{sleep, 1000}] end,
+    Opts = #{interceptors => [egrpc_test_recorder]},
+    with_channel(Handler, Opts, fun(Ch) ->
+        {ok, S} = egrpc_grpc_health_v1_health_stub:watch(Ch, #{service => <<"s">>}),
+        ok = egrpc_stream:cancel_stream(S),
+        ?assertEqual([{a, stream_open, none}, {a, stream_send, #{service => <<"s">>}},
+                      {a, stream_close, canceled}], events())
+    end).
+
+%% A derived channel has its own interceptors and the same subchannels.
+derive_replaces_interceptors(_Config) ->
+    with_channel(ok_handler(), #{interceptors => [egrpc_test_recorder]}, fun(Ch) ->
+        Derived = egrpc_channel:derive(Ch, #{interceptors => [egrpc_test_recorder_b]}),
+        Bare = egrpc_channel:derive(Ch, #{interceptors => []}),
+        ?assertMatch({ok, _}, ?CHECK(Ch)),
+        ?assertEqual([{a, unary, in}, {a, unary, out}], events()),
+        ?assertMatch({ok, _}, ?CHECK(Derived)),
+        ?assertEqual([{b, unary, in}, {b, unary, out}], events()),
+        ?assertMatch({ok, _}, ?CHECK(Bare)),
+        ?assertEqual([], events())
+    end).
+
 invalid_interceptor_is_an_error(_Config) ->
-    ?assertError({invalid_interceptor, lists},
-                 egrpc_stub:open("localhost", 1, #{interceptors => [lists]})),
+    Opts = fun(Interceptors) -> #{target => "localhost:1", interceptors => Interceptors} end,
+    ?assertError({invalid_interceptor, lists}, egrpc_channel:start(nope, Opts([lists]))),
     ?assertError({invalid_interceptor, not_a_module_at_all},
-                 egrpc_stub:open("localhost", 1, #{interceptors => [not_a_module_at_all]})).
+                 egrpc_channel:start(nope, Opts([not_a_module_at_all]))),
+    ?assertError({invalid_interceptor, 42}, egrpc_channel:start(nope, Opts([42]))),
+    ?assertError({invalid_interceptors, foo}, egrpc_channel:start(nope, Opts(foo))).
 
 removed_options_are_errors(_Config) ->
-    ?assertError({removed_option, unary_interceptors},
-                 egrpc_stub:open("localhost", 1, #{unary_interceptors => []})),
-    ?assertError({removed_option, stream_interceptors},
-                 egrpc_stub:open("localhost", 1, #{stream_interceptors => []})).
+    ?assertError({invalid_option, unary_interceptors},
+                 egrpc_channel:start(nope, #{target => "localhost:1", unary_interceptors => []})),
+    ?assertError({invalid_option, stream_interceptors},
+                 egrpc_channel:start(nope, #{target => "localhost:1", stream_interceptors => []})).

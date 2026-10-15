@@ -28,6 +28,7 @@ timeout_header(Ms) ->
     timeout_header(Ms div 1000, [<<"S">>, <<"M">>, <<"H">>], [60, 60]).
 
 timeout_header(Value, [Unit], _) ->
+    % eqwalizer:ignore
     <<(integer_to_binary(min(Value, 99999999)))/binary, Unit/binary>>;
 timeout_header(Value, [Unit | _], _) when Value =< 99999999 ->
     <<(integer_to_binary(Value))/binary, Unit/binary>>;

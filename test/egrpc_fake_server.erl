@@ -46,14 +46,16 @@ start(Handler) ->
     start(Handler, #{}).
 
 %% @doc Like `start/1', `Extra' are options of cowboy, for example `max_concurrent_streams' which
-%% the server tells the client in its SETTINGS.
+%% the server tells the client in its SETTINGS. `listen_port' is the port to listen on, a free one
+%% by default.
 -spec start(handler(), map()) -> {ok, Ref :: term()}.
 start(Handler, Extra) ->
     Ref = {?MODULE, make_ref()},
     Dispatch = cowboy_router:compile([
         {'_', [{'_', ?MODULE, #{handler => Handler, notify => self()}}]}
     ]),
-    {ok, _} = cowboy:start_clear(Ref, [{port, 0}], Extra#{
+    Rest = maps:remove(listen_port, Extra),
+    {ok, _} = cowboy:start_clear(Ref, [{port, maps:get(listen_port, Extra, 0)}], Rest#{
         protocols => [http2],
         env => #{dispatch => Dispatch}
     }),

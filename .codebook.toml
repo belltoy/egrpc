@@ -1,11 +1,17 @@
 words = [
+    "ALPN",
     "Cobertura",
     "Creds",
+    "GOAWAY",
+    "Mult",
+    "accessors",
     "bavix",
     "bidi",
+    "certfile",
     "coverdata",
     "covertool",
     "egrpc",
+    "eof",
     "eqwalizer",
     "erlpack",
     "getters",
@@ -15,5 +21,8 @@ words = [
     "ipath",
     "nofin",
     "protoc",
+    "subchannel",
+    "subchannels",
+    "tstream",
 ]
 ignore_paths = [".codebook.toml"]

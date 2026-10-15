@@ -8,7 +8,7 @@
 -export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([proto_is_the_default/1, json/1, erlpack/1, invalid_codec/1, codec_is_kept_by_derive/1]).
 
--define(CHECK(Ch), egrpc_grpc_health_v1_health_client:check(Ch, #{service => <<"s">>})).
+-define(CHECK(Ch), egrpc_grpc_health_v1_health_stub:check(Ch, #{service => <<"s">>})).
 
 all() ->
     [proto_is_the_default, json, erlpack, invalid_codec, codec_is_kept_by_derive].
@@ -30,8 +30,7 @@ call(Opts, Response) ->
             {trailers, [{<<"grpc-status">>, <<"0">>}]}
         ]
     end),
-    {ok, Ch0} = egrpc_stub:open("localhost", egrpc_fake_server:port(Ref), Opts),
-    {ok, Ch} = egrpc_stub:await_up(Ch0),
+    Ch = egrpc_test_util:open(egrpc_fake_server:port(Ref), Opts),
     try
         Result = ?CHECK(Ch),
         receive
@@ -39,7 +38,7 @@ call(Opts, Response) ->
         after 1000 -> ct:fail(no_request)
         end
     after
-        egrpc_stub:close(Ch, true),
+        egrpc_test_util:close(Ch),
         egrpc_fake_server:stop(Ref)
     end.
 
@@ -70,15 +69,22 @@ erlpack(_Config) ->
     ).
 
 invalid_codec(_Config) ->
-    ?assertError({invalid_codec, lists}, egrpc_stub:open("localhost", 1, #{codec => lists})),
-    ?assertError({invalid_codec, nope}, egrpc_stub:open("localhost", 1, #{codec => nope})).
+    ?assertError({invalid_codec, lists},
+                 egrpc_channel:start(not_started, #{target => "localhost:1", codec => lists})),
+    ?assertError({invalid_codec, nope},
+                 egrpc_channel:start(not_started, #{target => "localhost:1", codec => nope})).
 
 %% A derived channel has the codec of the original, it is not an option of derive/2.
 codec_is_kept_by_derive(_Config) ->
-    {ok, Ch} = egrpc_stub:open("localhost", 1, #{codec => egrpc_json}),
+    {ok, Ref} = egrpc_fake_server:start(fun(_) ->
+        egrpc_fake_server:ok(<<"{\"status\":\"SERVING\"}">>)
+    end),
+    Ch = egrpc_test_util:open(egrpc_fake_server:port(Ref), #{codec => egrpc_json}),
     try
-        ?assertEqual(egrpc_json, egrpc_stub:codec(egrpc_stub:derive(Ch, #{info => x}))),
-        ?assertError({invalid_option, codec}, egrpc_stub:derive(Ch, #{codec => egrpc_proto}))
+        Derived = egrpc_channel:derive(Ch, #{info => x}),
+        ?assertEqual({ok, #{status => 'SERVING'}}, ?CHECK(Derived)),
+        ?assertError({invalid_option, codec}, egrpc_channel:derive(Ch, #{codec => egrpc_proto}))
     after
-        egrpc_stub:close(Ch, true)
+        egrpc_test_util:close(Ch),
+        egrpc_fake_server:stop(Ref)
     end.
