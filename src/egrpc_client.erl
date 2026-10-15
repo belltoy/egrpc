@@ -74,7 +74,12 @@
     targets => [target()],
     pool_size => pos_integer(),
     balancer => egrpc_balancer:strategy(),
-    reconnect_backoff => egrpc_pool:backoff_opts(),
+    reconnect_backoff => #{
+        initial => non_neg_integer(),
+        max => non_neg_integer(),
+        multiplier => number(),
+        jitter => number()
+    },
     conn_opts => egrpc_stub:conn_opts(),
     retry => map(),
     retry_budget => map()
