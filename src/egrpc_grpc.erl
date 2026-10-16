@@ -37,7 +37,7 @@ timeout_header(Value, [_ | Units], [Factor | Factors]) ->
 
 -spec decode(http_encoding(), Decoder, binary()) -> Result when
     Decoder :: egrpc_codec:decoder(),
-    Result :: {ok, Msg :: term(), Rest :: binary()}
+    Result :: {ok, Msg :: map(), Rest :: binary()}
             | {error, egrpc:grpc_error() | any()}
             | more.
 decode(_Encoding, Decoder, <<0, Length:32, Bin:Length/binary, Rest/binary>>) ->

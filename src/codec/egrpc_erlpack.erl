@@ -10,7 +10,11 @@
 -spec init(any()) -> {egrpc_codec:encoder(), egrpc_codec:decoder()}.
 init(_) ->
     Encoder = fun erlang:term_to_binary/1,
-    Decoder = fun erlang:binary_to_term/1,
+    Decoder = fun(Bin) when is_binary(Bin) ->
+        Msg = binary_to_term(Bin),
+        true = is_map(Msg),
+        Msg
+    end,
     {Encoder, Decoder}.
 
 %% Not a standard encoding, the gRPC protocol allows a custom suffix.

@@ -14,8 +14,9 @@
 
 -export_type([encoder/0, decoder/0]).
 
--type encoder() :: fun((term()) -> binary()).
--type decoder() :: fun((binary()) -> term()).
+%% A message is a map, as the generated stubs and the pb modules (the `maps' option of gpb) have it.
+-type encoder() :: fun((map()) -> binary()).
+-type decoder() :: fun((binary()) -> map()).
 
 -callback init(Opts :: any()) -> {encoder(), decoder()}.
 
