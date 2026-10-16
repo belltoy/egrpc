@@ -523,12 +523,12 @@ action({create_subchannel, #egrpc_endpoint{id = Id} = Endpoint},
             State#state{subs = Subs#{Id => #sub{pid = Pid, mref = MRef, endpoint = Endpoint}}}
     end;
 action({remove_subchannel, Id}, #state{sub_sup = Sup, subs = Subs} = State) ->
-    case maps:take(Id, Subs) of
-        {#sub{pid = Pid, mref = MRef}, Rest} ->
+    case Subs of
+        #{Id := #sub{pid = Pid, mref = MRef}} ->
             true = erlang:demonitor(MRef, [flush]),
             _ = supervisor:terminate_child(Sup, Pid),
-            State#state{subs = Rest};
-        error ->
+            State#state{subs = maps:remove(Id, Subs)};
+        #{} ->
             State
     end;
 action({connect, Id}, #state{subs = Subs} = State) ->
