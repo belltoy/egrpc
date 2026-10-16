@@ -24,9 +24,7 @@ init(_Config) ->
 update_endpoints(New, #state{endpoints = Old, states = States0} = State) ->
     {Removed, Added} = egrpc_balancer:diff(Old, New),
     States1 = maps:without(Removed, States0),
-    States = lists:foldl(
-        fun(#egrpc_endpoint{id = Id}, Acc) -> Acc#{Id => idle} end, States1, Added
-    ),
+    States = maps:merge(States1, #{Id => idle || #egrpc_endpoint{id = Id} <- Added}),
     Actions =
         [{remove_subchannel, Id} || Id <- Removed] ++
         lists:append([[{create_subchannel, E}, {connect, Id}] || #egrpc_endpoint{id = Id} = E <- Added]),
