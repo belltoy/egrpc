@@ -100,8 +100,14 @@ default_backoff() ->
 %% the result may be above or below.
 -spec backoff(pos_integer(), backoff_opts()) -> non_neg_integer().
 backoff(Attempt, #{initial := Initial, max := Max, multiplier := Mult, jitter := Jitter}) ->
-    Base = min(Max * 1.0, Initial * math:pow(Mult, max(Attempt - 1, 0))),
-    max(0, round(Base * (1 + Jitter * (rand:uniform() * 2 - 1)))).
+    Exp = Initial * math:pow(Mult, non_negative(Attempt - 1)),
+    Base = case Exp > Max of true -> Max * 1.0; false -> Exp end,
+    non_negative(round(Base * (1 + Jitter * (rand:uniform() * 2 - 1)))).
+
+%% erlang:max/2 is typed on any term, this one keeps the integer.
+-spec non_negative(integer()) -> non_neg_integer().
+non_negative(N) when N > 0 -> N;
+non_negative(_) -> 0.
 
 %%--------------------------------------------------------------------
 
@@ -300,7 +306,7 @@ shrink(#egrpc_subchannel_data{transport_pool = Pool, counters = Counters, transp
              atomics:get(Counters, Idx) =:= 0,
              Given(Idx) =:= maps:get(Idx, Seen0, -1)
     ],
-    Excess = max(0, length(egrpc_transport_pool:ready(Pool)) - Min),
+    Excess = non_negative(length(egrpc_transport_pool:ready(Pool)) - Min),
     Data = lists:foldl(
         fun(#egrpc_transport_ref{pid = Pid} = Ref, D) ->
             ok = close_transport(Transport, Pid),

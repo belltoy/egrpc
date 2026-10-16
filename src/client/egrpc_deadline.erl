@@ -17,7 +17,15 @@ from_timeout(Ms) when is_integer(Ms), Ms >= 0 -> erlang:monotonic_time(milliseco
 %% @doc The milliseconds which are left, `infinity' without a deadline. Not below 0.
 -spec remaining(deadline()) -> infinity | non_neg_integer().
 remaining(infinity) -> infinity;
-remaining(At) -> max(0, At - erlang:monotonic_time(millisecond)).
+remaining(At) -> left(At).
+
+%% erlang:max/2 is typed on any term, this one keeps the integer.
+-spec left(integer()) -> non_neg_integer().
+left(At) ->
+    case At - erlang:monotonic_time(millisecond) of
+        Ms when Ms > 0 -> Ms;
+        _ -> 0
+    end.
 
 -spec expired(deadline()) -> boolean().
 expired(infinity) -> false;
@@ -26,7 +34,7 @@ expired(At) -> At - erlang:monotonic_time(millisecond) =< 0.
 %% @doc The `grpc-timeout' header of what is left, `undefined' without a deadline.
 -spec header(deadline()) -> undefined | binary().
 header(infinity) -> undefined;
-header(At) -> egrpc_grpc:timeout_header(remaining(At)).
+header(At) -> egrpc_grpc:timeout_header(left(At)).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
