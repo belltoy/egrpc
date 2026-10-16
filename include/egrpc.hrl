@@ -81,7 +81,7 @@
 
 %% A gRPC status, see `egrpc_status'.
 -record(egrpc_status, {
-    code :: atom(),
+    code :: egrpc_status:code(),
     message = <<>> :: binary(),
     details = [] :: list(),
     trailers = [] :: [{binary(), binary()}]

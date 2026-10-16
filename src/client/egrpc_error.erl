@@ -66,6 +66,8 @@ from_grpc_status(Headers) ->
 class({error, Reason}) ->
     class(Reason);
 class({grpc_error, Name, Message}) when is_atom(Name), is_binary(Message) ->
+    %% By convention this shape is a grpc_error(), the name is one of grpc_error_name().
+    %% eqwalizer:ignore
     {grpc, Name};
 class({stream_error, {goaway, _, _}}) ->
     {transport, not_sent};

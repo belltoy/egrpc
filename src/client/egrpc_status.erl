@@ -5,7 +5,7 @@
 
 -include("egrpc_internal.hrl").
 
--export([new/2, from_error/1, to_error/1, code/1, name/1, is_ok/1]).
+-export([new/2, from_error/1, code/1, name/1, is_ok/1]).
 
 -export_type([status/0, code/0]).
 
@@ -24,7 +24,8 @@ is_ok(#egrpc_status{}) -> false.
 %% is `unavailable', a deadline is `deadline_exceeded', and anything else which is not a status
 %% of the server is `unknown'. The reason is kept in `details'.
 -spec from_error(term()) -> status().
-from_error({grpc_error, Name, Message}) when is_atom(Name), is_binary(Message) ->
+from_error({grpc_error, _, Message} = Error) when is_binary(Message) ->
+    {grpc, Name} = egrpc_error:class(Error),
     #egrpc_status{code = Name, message = Message};
 from_error(Reason) ->
     Code = case egrpc_error:class(Reason) of
@@ -34,10 +35,6 @@ from_error(Reason) ->
     end,
     #egrpc_status{code = Code, message = iolist_to_binary(io_lib:format("~0p", [Reason])),
                   details = [Reason]}.
-
--spec to_error(status()) -> egrpc:grpc_error().
-to_error(#egrpc_status{code = Code, message = Message}) ->
-    {grpc_error, Code, Message}.
 
 %% @doc The number of a code on the wire.
 -spec code(code()) -> 0..16.
@@ -88,6 +85,5 @@ from_error_test() ->
     ?assertMatch(#egrpc_status{code = not_found}, from_error({grpc_error, not_found, <<"x">>})),
     ?assertMatch(#egrpc_status{code = unavailable}, from_error(timeout)),
     ?assertMatch(#egrpc_status{code = unavailable}, from_error({stream_error, closing})),
-    ?assertMatch(#egrpc_status{code = unknown}, from_error({call_credentials, x})),
-    ?assertEqual({grpc_error, internal, <<"m">>}, to_error(new(internal, <<"m">>))).
+    ?assertMatch(#egrpc_status{code = unknown}, from_error({call_credentials, x})).
 -endif.
