@@ -65,6 +65,8 @@ metadata_test() ->
     ?assertEqual({ok, [{<<"a">>, <<"1">>}]}, metadata(fun(_) -> {ok, #{<<"A">> => <<"1">>}} end, Info)),
     ?assertEqual({error, no}, metadata(fun(_) -> {error, no} end, Info)),
     ?assertEqual({ok, [{<<"i">>, <<"i">>}]},
+                 % eqwalizer:ignore
                  metadata(fun(#{info := I}) -> {ok, [{<<"i">>, atom_to_binary(I)}]} end, Info)),
+    % eqwalizer:ignore
     ?assertError({invalid_call_credentials, x}, metadata(fun(_) -> x end, Info)).
 -endif.

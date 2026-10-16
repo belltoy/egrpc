@@ -346,6 +346,7 @@ start_gripmock(DataDir) ->
         false -> start_container(DataDir);
         Addr ->
             [_Host, Grpc, Http] = string:split(Addr, ":", all),
+            % eqwalizer:ignore
             {ok, {external, list_to_integer(Grpc), list_to_integer(Http)}}
     end.
 
@@ -375,6 +376,7 @@ published_ports() ->
 port(Spec) ->
     Out = run("docker port " ?CONTAINER " " ++ Spec),
     [Line | _] = string:split(string:trim(Out), "\n"),
+    % eqwalizer:ignore
     list_to_integer(lists:last(string:split(Line, ":", all))).
 
 wait_ready({Grpc, Http}) ->

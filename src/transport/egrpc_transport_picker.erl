@@ -189,6 +189,7 @@ reserve_falls_over_to_the_next_connection_test() ->
     Conns = [{1, c1, 1}, {2, c2, 1}],
     [begin
          A = atomics:new(6, [{signed, true}]),
+         % eqwalizer:ignore
          Results = concurrently(8, fun() -> choose(A, 2, Conns, true) end),
          Got = [R || R <- Results, R =/= none],
          ?assertEqual(2, length(Got)),
@@ -199,11 +200,13 @@ reserve_falls_over_to_the_next_connection_test() ->
 reserve_skips_a_draining_connection_test() ->
     A = atomics:new(6, [{signed, true}]),
     ok = atomics:put(A, 2 + 1, 1),
+    % eqwalizer:ignore
     ?assertEqual(none, choose(A, 2, [{1, c1, infinity}], true)),
     ?assertEqual(0, atomics:get(A, 1)).
 
 reserve_without_a_limit_counts_test() ->
     A = atomics:new(3, [{signed, true}]),
+    % eqwalizer:ignore
     Results = concurrently(50, fun() -> choose(A, 1, [{1, c, infinity}], true) end),
     ?assertEqual(50, length([R || R <- Results, R =/= none])),
     ?assertEqual(50, atomics:get(A, 1)).
@@ -212,6 +215,7 @@ least_loaded_test() ->
     A = atomics:new(6, [{signed, true}]),
     ok = atomics:put(A, 1, 3),
     ok = atomics:put(A, 2, 1),
+    % eqwalizer:ignore
     ?assertEqual({2, c2}, choose(A, 2, [{1, c1, infinity}, {2, c2, infinity}], false)).
 
 limit_test() ->

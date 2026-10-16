@@ -282,6 +282,8 @@ invalid_interceptor_is_an_error(_Config) ->
 
 removed_options_are_errors(_Config) ->
     ?assertError({invalid_option, unary_interceptors},
+                 % eqwalizer:ignore
                  egrpc_channel:start(nope, #{target => "localhost:1", unary_interceptors => []})),
     ?assertError({invalid_option, stream_interceptors},
+                 % eqwalizer:ignore
                  egrpc_channel:start(nope, #{target => "localhost:1", stream_interceptors => []})).

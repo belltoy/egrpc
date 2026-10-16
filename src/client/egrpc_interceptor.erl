@@ -100,6 +100,7 @@ order_test() ->
         end
     end,
     Chain = unary_chain([Trace(a), Trace(b)], fun(_, _) -> {ok, #{}} end),
+    % eqwalizer:ignore
     {ok, #{}} = Chain(call, #{}),
     ?assertEqual([{in, a}, {in, b}, {out, b}, {out, a}], [receive M -> M end || _ <- lists:seq(1, 4)]).
 -endif.

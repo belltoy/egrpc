@@ -152,13 +152,16 @@ already_started(_Config) ->
     stop_servers([Srv]).
 
 invalid_options(_Config) ->
+    % eqwalizer:ignore
     ?assertError({missing_option, target}, egrpc_channel:start(nope, #{})),
+    % eqwalizer:ignore
     ?assertError({invalid_option, foo}, egrpc_channel:start(nope, #{target => "h:1", foo => 1})),
     ?assertError({invalid_target, _}, egrpc_channel:start(nope, #{target => "xds:///h:1"})),
     ?assertError({invalid_address, _}, egrpc_channel:start(nope, #{target => "static:///h"})),
     ?assertError({invalid_option, {min_connections, 0}},
                  egrpc_channel:start(nope, #{target => "h:1", transport_pool => #{min_connections => 0}})),
     ?assertError({invalid_option, {balancer, 1}},
+                 % eqwalizer:ignore
                  egrpc_channel:start(nope, #{target => "h:1", balancer => 1})),
     ?assertError({invalid_option, {retry, foo}},
                  egrpc_channel:start(nope, #{target => "h:1", retry => #{foo => 1}})).
@@ -415,7 +418,9 @@ derive(_Config) ->
     %% the same subchannels
     ?assertMatch({ok, _}, ?CHECK(D)),
     ?assertEqual([a], hits()),
+    % eqwalizer:ignore
     ?assertError({invalid_option, gun_opts}, egrpc_channel:derive(?NAME, #{gun_opts => #{}})),
+    % eqwalizer:ignore
     ?assertError({invalid_option, retry}, egrpc_channel:derive(D, #{retry => #{}})),
     %% a derived channel of a channel which is stopped
     ok = egrpc_channel:stop(?NAME, 1000),

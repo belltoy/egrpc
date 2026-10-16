@@ -171,5 +171,6 @@ streaming_call(_Config) ->
 
 invalid_option(_Config) ->
     ?assertError({invalid_call_credentials, "not_a_fun"},
+                 % eqwalizer:ignore
                  egrpc_channel:start(not_started, #{target => "localhost:1",
                                                     call_credentials => "not_a_fun"})).

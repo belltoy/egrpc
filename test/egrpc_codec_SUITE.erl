@@ -83,6 +83,7 @@ codec_is_kept_by_derive(_Config) ->
     try
         Derived = egrpc_channel:derive(Ch, #{info => x}),
         ?assertEqual({ok, #{status => 'SERVING'}}, ?CHECK(Derived)),
+        % eqwalizer:ignore
         ?assertError({invalid_option, codec}, egrpc_channel:derive(Ch, #{codec => egrpc_proto}))
     after
         egrpc_test_util:close(Ch),
