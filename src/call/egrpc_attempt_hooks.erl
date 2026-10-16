@@ -23,7 +23,7 @@
 -spec start([module()], egrpc_attempt:info()) -> ok.
 start(Hooks, Info) ->
     lists:foreach(
-        fun(M) ->
+        fun(M) when is_atom(M) ->
             case egrpc_interceptor:is_impl(M, on_attempt_start, 1) of
                 true -> observe(M, on_attempt_start, fun() -> M:on_attempt_start(Info) end);
                 false -> ok
@@ -36,7 +36,7 @@ start(Hooks, Info) ->
 -spec 'end'([module()], egrpc_attempt:info(), {ok | error, egrpc_status:status()}) -> ok.
 'end'(Hooks, Info, Result) ->
     lists:foreach(
-        fun(M) ->
+        fun(M) when is_atom(M) ->
             case egrpc_interceptor:is_impl(M, on_attempt_end, 2) of
                 true -> observe(M, on_attempt_end, fun() -> M:on_attempt_end(Info, Result) end);
                 false -> ok

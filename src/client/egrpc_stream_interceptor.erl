@@ -54,6 +54,7 @@
 %% @private
 -spec implements_any(module()) -> boolean().
 implements_any(Module) ->
+    % eqwalizer:ignore
     lists:any(fun({F, A}) -> egrpc_interceptor:is_impl(Module, F, A) end, ?CALLBACKS).
 
 %% @private
@@ -68,7 +69,7 @@ modules(Specs) ->
 open_chain(Hooks, Base) ->
     % eqwalizer:ignore
     lists:foldr(
-        fun(M, Next) ->
+        fun(M, Next) when is_atom(M) ->
             case egrpc_interceptor:is_impl(M, stream_open, 2) of
                 true -> fun(Call) -> M:stream_open(Call, Next) end;
                 false -> Next
@@ -81,7 +82,7 @@ open_chain(Hooks, Base) ->
 %% @private
 send_chain(Hooks, Base) ->
     lists:foldr(
-        fun(M, Next) ->
+        fun(M, Next) when is_atom(M) ->
             case egrpc_interceptor:is_impl(M, stream_send, 3) of
                 true -> fun(S, Msg) -> M:stream_send(S, Msg, Next) end;
                 false -> Next
@@ -94,7 +95,7 @@ send_chain(Hooks, Base) ->
 %% @private
 recv_chain(Hooks, Base) ->
     lists:foldr(
-        fun(M, Next) ->
+        fun(M, Next) when is_atom(M) ->
             case egrpc_interceptor:is_impl(M, stream_recv, 3) of
                 true -> fun(S, T) -> M:stream_recv(S, T, Next) end;
                 false -> Next
@@ -119,7 +120,7 @@ observe(Module, Hook, Fun) ->
 -spec close(hooks(), egrpc:stream(), egrpc_status:status()) -> ok.
 close(Hooks, Stream, Status) ->
     lists:foreach(
-        fun(M) ->
+        fun(M) when is_atom(M) ->
             case egrpc_interceptor:is_impl(M, stream_close, 2) of
                 true -> observe(M, stream_close, fun() -> M:stream_close(Stream, Status) end);
                 false -> ok

@@ -29,13 +29,12 @@ new(Map) ->
 -spec tls_opts(#egrpc_transport_credentials{}) -> [ssl:tls_client_option()].
 tls_opts(#egrpc_transport_credentials{ca = Ca, cert = Cert, key = Key, verify = Verify}) ->
     Base = [{verify, Verify}, {alpn_advertised_protocols, [<<"h2">>]}],
-    Opts = lists:append([ca(Ca), cert(Cert), key(Key)]),
     %% the system CAs when none was given and the peer is verified
     Default = case {Ca, Verify} of
         {undefined, verify_peer} -> [{cacerts, public_key:cacerts_get()}];
         _ -> []
     end,
-    Base ++ Opts ++ Default.
+    Base ++ ca(Ca) ++ cert(Cert) ++ key(Key) ++ Default.
 
 ca(undefined) -> [];
 ca(File) when is_list(File) ->

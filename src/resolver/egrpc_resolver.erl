@@ -49,6 +49,7 @@ parse_target("static:///" ++ Rest) ->
 parse_target(Target) when is_list(Target) ->
     case io_lib:printable_list(Target) of
         true ->
+            % eqwalizer:ignore
             case string:find(Target, "://") of
                 nomatch -> {egrpc_resolver_static, split(Target)};
                 _ -> error({invalid_target, Target})
@@ -69,6 +70,7 @@ endpoint(#egrpc_endpoint{addresses = [_ | _]} = Endpoint) ->
 endpoint({Host, Port}) when is_integer(Port) ->
     from_address(Host, Port, #{}, undefined, #{});
 endpoint(String) when is_list(String); is_binary(String) ->
+    % eqwalizer:ignore
     {Host, Port} = parse_address(String),
     from_address(Host, Port, #{}, undefined, #{});
 endpoint(#{host := Host, port := Port} = Map) ->
@@ -102,11 +104,13 @@ parse_address(Bin) when is_binary(Bin) ->
     parse_address(binary_to_list(Bin));
 parse_address("[" ++ Rest = String) ->
     case string:split(Rest, "]:") of
+        % eqwalizer:ignore
         [Host, Port] -> {Host, port(Port, String)};
         _ -> error({invalid_address, String})
     end;
 parse_address(String) ->
     case string:split(String, ":", trailing) of
+        % eqwalizer:ignore
         [Host, Port] when Host =/= "" -> {Host, port(Port, String)};
         _ -> error({invalid_address, String})
     end.

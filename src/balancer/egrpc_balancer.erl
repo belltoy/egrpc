@@ -47,11 +47,9 @@ module(Module) when is_atom(Module) -> {Module, undefined}.
 -spec diff(Old :: [#egrpc_endpoint{}], New :: [#egrpc_endpoint{}]) ->
     {Removed :: [term()], Added :: [#egrpc_endpoint{}]}.
 diff(Old, New) ->
-    OldMap = maps:from_list([{Id, A} || #egrpc_endpoint{id = Id, addresses = A} <- Old]),
-    NewMap = maps:from_list([{Id, A} || #egrpc_endpoint{id = Id, addresses = A} <- New]),
-    Removed = [
-        Id || {Id, Addrs} <- maps:to_list(OldMap), maps:get(Id, NewMap, undefined) =/= Addrs
-    ],
+    OldMap = #{ Id => A || #egrpc_endpoint{id = Id, addresses = A} <- Old },
+    NewMap = #{ Id => A || #egrpc_endpoint{id = Id, addresses = A} <- New },
+    Removed = [Id || Id := Addrs <- OldMap, maps:get(Id, NewMap, undefined) =/= Addrs],
     Added = [
         E || #egrpc_endpoint{id = Id, addresses = Addrs} = E <- New,
              maps:get(Id, OldMap, undefined) =/= Addrs
