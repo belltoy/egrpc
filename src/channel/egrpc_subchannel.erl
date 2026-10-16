@@ -30,7 +30,25 @@
 -export([callback_mode/0, init/1, handle_event/4, terminate/3]).
 -export([backoff/2, default_backoff/0]).
 
--export_type([args/0, backoff_opts/0]).
+-export_type([args/0, backoff_opts/0, info/0, transport_info/0]).
+
+-type transport_info() :: #{
+    id := pos_integer(),
+    state := connecting | ready | draining | closed | down,
+    draining := boolean(),
+    active_streams := non_neg_integer(),
+    max_streams := non_neg_integer() | infinity
+}.
+
+%% What `info/1' tells of a subchannel.
+-type info() :: #{
+    id := term(),
+    endpoint := #egrpc_endpoint{},
+    state := egrpc_balancer:conn_state(),
+    max_connections := pos_integer(),
+    transports := [transport_info()],
+    last_error := term()
+}.
 
 -type backoff_opts() :: #{
     initial := non_neg_integer(),
@@ -86,8 +104,10 @@ connect(Pid) ->
 scale_up(Pid) ->
     gen_statem:cast(Pid, scale_up).
 
--spec info(pid()) -> map().
+-spec info(pid()) -> info().
 info(Pid) ->
+    %% the reply is the `describe/2' of the subchannel itself
+    % eqwalizer:ignore
     gen_statem:call(Pid, info).
 
 %% @doc The default of `reconnect_backoff', in milliseconds.
@@ -341,6 +361,7 @@ publish(#egrpc_subchannel_data{channel = Name, id = Id, counters = Counters, end
     true = ets:insert(?ROWS, {{Name, Id}, self(), Counters, Size, Ready, Opts, Endpoint}),
     ok.
 
+-spec describe(egrpc_balancer:conn_state(), data()) -> info().
 describe(State, #egrpc_subchannel_data{id = Id, endpoint = Endpoint, transport_pool = Pool,
                                        counters = Counters, last_error = Error}) ->
     Size = egrpc_transport_pool:max_connections(Pool),

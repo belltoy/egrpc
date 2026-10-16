@@ -201,11 +201,26 @@ connectivity(Name) ->
 
 %% @doc The state of the channel for the one who looks at it: the subchannels and their
 %% transports.
--spec describe(egrpc:channel_name()) -> map() | {error, channel_not_found}.
+-spec describe(egrpc:channel_name()) -> Result | Error when
+    Result :: #{
+        connectivity := egrpc_balancer:conn_state(),
+        picker_version := term(),
+        subchannels := [
+            egrpc_subchannel:info()
+            | #{
+                id := term(),
+                state :=
+                    egrpc_balancer:conn_state()
+            }
+        ]
+    },
+    Error :: {error, channel_not_found}.
 describe(Name) ->
     case ets:lookup(?PICKERS, Name) of
         [{_, Version, _, #egrpc_channel_ref{coordinator = Pid}, Connectivity}] ->
             try gen_server:call(Pid, describe, 5000) of
+                %% the reply is the list of `handle_call(describe, ...)'
+                % eqwalizer:ignore
                 Subs -> #{connectivity => Connectivity, picker_version => Version, subchannels => Subs}
             catch
                 exit:_ -> #{connectivity => Connectivity, picker_version => Version, subchannels => []}

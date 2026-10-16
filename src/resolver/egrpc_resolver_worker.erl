@@ -28,7 +28,10 @@ start_link(Name) ->
 %% @doc Replace the endpoints of the resolver which was given them.
 -spec update(pid(), [term()]) -> ok | {error, term()}.
 update(Pid, Endpoints) ->
-    gen_server:call(Pid, {update, Endpoints}, 30000).
+    case gen_server:call(Pid, {update, Endpoints}, 30000) of
+        ok -> ok;
+        {error, _} = Error -> Error
+    end.
 
 init(Name) ->
     {ok, {_, Opts, _, _}} = egrpc_registry:lookup(Name),
