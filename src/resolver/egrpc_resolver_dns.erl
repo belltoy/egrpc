@@ -32,8 +32,10 @@ resolve(#{host := Host, port := Port, refresh := Refresh} = State) ->
 
 endpoint(Host, Ip, Port) ->
     Family = case tuple_size(Ip) of 4 -> inet; 8 -> inet6 end,
+    %% the addresses come from getaddrs, a bad one is a crash like the family above
+    Name = case inet:ntoa(Ip) of S when is_list(S) -> S end,
     Address = #egrpc_address{
-        host = inet:ntoa(Ip),
+        host = Name,
         port = Port,
         family = Family,
         attributes = #{authority => Host}
