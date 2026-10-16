@@ -78,7 +78,7 @@ by_pid(Pid, #pool{transports = T}) ->
 
 -spec to_list(pool()) -> [#egrpc_transport_ref{}].
 to_list(#pool{transports = T}) ->
-    [R || {_, R} <- lists:sort(maps:to_list(T))].
+    [R || _ := R <- maps:iterator(T, ordered)].
 
 %% @doc The transports which take new calls.
 -spec ready(pool()) -> [#egrpc_transport_ref{}].
