@@ -384,7 +384,7 @@ handle_continue(find_sup, State) ->
     [Parent | _] = get('$ancestors'),
     Sup = case Parent of
         P when is_pid(P) -> P;
-        P when is_atom(P) -> whereis(P)
+        P when is_atom(P) -> case whereis(P) of S when is_pid(S) -> S end
     end,
     {_, Pid, _, _} = lists:keyfind(subchannel_sup, 1, supervisor:which_children(Sup)),
     {noreply, State#state{sub_sup = Pid}}.
@@ -518,7 +518,7 @@ action({create_subchannel, #egrpc_endpoint{id = Id} = Endpoint},
                 backoff => maps:merge(egrpc_subchannel:default_backoff(),
                                       maps:get(reconnect_backoff, Opts, #{}))
             },
-            {ok, Pid} = supervisor:start_child(Sup, [Args]),
+            Pid = case supervisor:start_child(Sup, [Args]) of {ok, P} when is_pid(P) -> P end,
             MRef = erlang:monitor(process, Pid),
             State#state{subs = Subs#{Id => #sub{pid = Pid, mref = MRef, endpoint = Endpoint}}}
     end;
