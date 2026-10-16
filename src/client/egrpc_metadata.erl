@@ -31,7 +31,11 @@ store(Key, Value, Metadata) ->
 
 -spec lookup(binary(), metadata()) -> binary() | undefined.
 lookup(Key, Metadata) ->
-    proplists:get_value(key(Key), Metadata).
+    Lower = key(Key),
+    case [V || {K, V} <- Metadata, K =:= Lower] of
+        [Value | _] -> Value;
+        [] -> undefined
+    end.
 
 %% @doc Without the `grpc-' entries, which are the ones of the protocol and are not set by the
 %% application.
@@ -49,5 +53,7 @@ normalize_merge_test() ->
         [{<<"b">>, <<"2">>}, {<<"a">>, <<"3">>}],
         merge([{<<"a">>, <<"1">>}, {<<"b">>, <<"2">>}], [{<<"a">>, <<"3">>}])
     ),
+    ?assertEqual(<<"1">>, lookup(<<"A">>, [{<<"a">>, <<"1">>}, {<<"a">>, <<"2">>}])),
+    ?assertEqual(undefined, lookup(<<"b">>, [{<<"a">>, <<"1">>}])),
     ?assertEqual([{<<"x">>, <<"1">>}], custom([{<<"grpc-timeout">>, <<"1m">>}, {<<"x">>, <<"1">>}])).
 -endif.
