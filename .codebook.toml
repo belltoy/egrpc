@@ -4,6 +4,7 @@ words = [
     "Creds",
     "GOAWAY",
     "Mult",
+    "Srv",
     "accessors",
     "bavix",
     "bidi",
