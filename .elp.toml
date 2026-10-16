@@ -1,0 +1,6 @@
+[eqwalizer]
+ignore_modules = [
+    "egrpc_health_pb",
+    "egrpc_reflection_v1_pb",
+    "egrpc_reflection_v1alpha_pb",
+]
