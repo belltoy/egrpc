@@ -390,7 +390,7 @@ survives_a_crashed_coordinator(_Config) ->
     Srv = serve(a),
     start([Srv]),
     ok = wait_ready(1),
-    {ok, {_, _, _, Pid}} = egrpc_registry:lookup(?NAME),
+    Pid = case egrpc_registry:lookup(?NAME) of {ok, {_, _, _, C}} when is_pid(C) -> C end,
     MRef = erlang:monitor(process, Pid),
     exit(Pid, kill),
     receive {'DOWN', MRef, process, Pid, _} -> ok after 2000 -> ct:fail(not_killed) end,

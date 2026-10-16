@@ -61,11 +61,14 @@ start(Handler, Extra) ->
     }),
     {ok, Ref}.
 
--spec stop(term()) -> ok.
+-spec stop(term()) -> ok | {error, not_found}.
 stop(Ref) -> cowboy:stop_listener(Ref).
 
 -spec port(term()) -> inet:port_number().
-port(Ref) -> ranch:get_port(Ref).
+port(Ref) ->
+    case ranch:get_port(Ref) of
+        Port when is_integer(Port) -> Port
+    end.
 
 %% @doc A gRPC message in a frame (uncompressed).
 -spec frame(binary()) -> binary().
