@@ -1,6 +1,8 @@
 # egrpc
 
-[![Hex Version](https://img.shields.io/hexpm/v/egrpc.svg)](https://hex.pm/packages/egrpc) [![Hex Docs](https://img.shields.io/badge/docs-hexpm-blue.svg)](https://hexdocs.pm/egrpc/)
+[![Hex Version](https://img.shields.io/hexpm/v/egrpc.svg)](https://hex.pm/packages/egrpc)
+[![Hex Docs](https://img.shields.io/badge/docs-hexpm-blue.svg)](https://hexdocs.pm/egrpc/)
+[![CI](https://github.com/belltoy/egrpc/actions/workflows/ci.yml/badge.svg?branch=redesign)](https://github.com/belltoy/egrpc/actions/workflows/ci.yml)
 
 A gRPC client library for Erlang/OTP built on top of [gun](https://github.com/ninenines/gun).
 
