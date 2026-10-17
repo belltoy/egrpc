@@ -42,7 +42,7 @@ jobs:
       - name: Pull GripMock
         run: docker pull bavix/gripmock || true
 
-      - run: rebar3 do eunit -v -c, ct -v -c, covertool generate
+      - run: rebar3 do eunit -v -c, ct -v -c, cover -v, covertool generate
 
       - name: Upload Common Test logs
         if: failure()
