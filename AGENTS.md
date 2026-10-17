@@ -33,7 +33,7 @@ do it when explicitly asked.
 
 ## Build and verify
 
-Use the toolchain pinned in `.mise.toml` (Erlang 27.3, rebar 3.25.1, elp otp-27). Run every command
+Use the toolchain pinned in `.mise.toml` (Erlang 27.3, rebar 3.26.0, elp otp-27). Run every command
 through `mise exec --`, because the shell may not have mise activated and PATH may point to old
 versions:
 
@@ -59,7 +59,7 @@ versions:
 
 - `rebar3 ct --suite test/egrpc_unary_SUITE` runs one suite. The timeout cases wait for the real
   timeouts, a full run takes about half a minute.
-- cowboy is a dependency of the `test` profile only, pinned to 2.12.0: with 2.13.0 rebar3 3.25.1 fails
+- cowboy is a dependency of the `test` profile only, `~> 2.20`, tested with 2.20.0. rebar3 3.25.1 fails with 2.13.0 (`Dep ranch has invalid version`), 3.26.0 does not
   with `Dep ranch has invalid version`.
 - `test/egrpc_test_echo_pb.erl` is generated from `test/egrpc_gripmock_SUITE_data/echo.proto`, the
   command is in the header of the suite. It is the only generated file outside `src/` and is committed.
